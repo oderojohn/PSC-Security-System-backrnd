@@ -34,9 +34,6 @@ class PackagePrinter:
                 printer.sendall(b"Web: www.parklandssportsclub.org\n")
                 printer.sendall(b"\n")
 
-                # Logo Placeholder (Optional ASCII logo)
-                # Replace this with actual image logic if your printer supports raster graphics.
-
                 # Title
                 printer.sendall(self.BOLD_ON + b"PACKAGE RECEIPT\n")
                 printer.sendall(self.BOLD_OFF + self.LINE_FEED)
@@ -56,7 +53,6 @@ class PackagePrinter:
                 printer.sendall(self.BOLD_ON + b"Description: ")
                 printer.sendall(self.BOLD_OFF + package_data['description'].encode('utf-8') + self.LINE_FEED)
 
-                # Add Shelf Number if available
                 if 'shelf' in package_data and package_data['shelf']:
                     printer.sendall(self.BOLD_ON + b"Shelf: ")
                     printer.sendall(self.BOLD_OFF + package_data['shelf'].encode('utf-8') + self.LINE_FEED)
@@ -82,6 +78,11 @@ class PackagePrinter:
                 # -- Date & Time --
                 printer.sendall(b"\n" + self.BOLD_ON + b"Date: ")
                 printer.sendall(self.BOLD_OFF + datetime.now().strftime("%Y-%m-%d %H:%M").encode('utf-8') + self.LINE_FEED)
+
+                # -- Created By --
+                if 'created_by' in package_data:
+                    printer.sendall(self.BOLD_ON + b"Created By: ")
+                    printer.sendall(self.BOLD_OFF + package_data['created_by'].encode('utf-8') + self.LINE_FEED)
 
                 # -- QR Code --
                 qr_data = package_data['code']

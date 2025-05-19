@@ -23,9 +23,11 @@ def get_lowest_unoccupied_shelf():
 class Package(models.Model):
     PACKAGE = 'package'
     DOCUMENT = 'document'
+    KEYS='keys'
     TYPE_CHOICES = [
         (PACKAGE, 'Package'),
         (DOCUMENT, 'Document'),
+        (KEYS,'keys'),
     ]
     
     PENDING = 'pending'
