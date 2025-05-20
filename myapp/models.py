@@ -14,7 +14,7 @@ def get_lowest_unoccupied_shelf():
         Package.objects.filter(status=Package.PENDING)
         .values_list('shelf', flat=True)
     )
-    for i in range(1, 100): 
+    for i in range(1, 1000): 
         shelf = f"S{i}"
         if shelf not in occupied:
             return shelf
@@ -51,6 +51,7 @@ class Package(models.Model):
     
     picked_by = models.CharField(max_length=100, blank=True, null=True)
     picker_phone = models.CharField(max_length=20, blank=True, null=True)
+    picker_id = models.CharField(max_length=20, blank=True, null=True)
     picked_at = models.DateTimeField(blank=True, null=True)
 
     shelf = models.CharField(max_length=10, blank=True, null=True, editable=False)

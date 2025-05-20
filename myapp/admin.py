@@ -18,7 +18,7 @@ class PackageAdmin(admin.ModelAdmin):
             'fields': ('dropped_by', 'dropper_phone', 'created_at')
         }),
         ('Pick Information', {
-            'fields': ('picked_by', 'picker_phone', 'picked_at', 'updated_at'),
+            'fields': ('picked_by', 'picker_phone', 'picked_at', 'updated_at','picker_id'),
             'classes': ('collapse',)
         }),
     )
