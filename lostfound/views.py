@@ -318,8 +318,8 @@ class FoundItemViewSet(ReportMixin, viewsets.ModelViewSet):
             found_item.save()
             
             # Print pickup receipt
-            printer = PackagePrinter()
-            printer.print_pickup_receipt(pickup_log)
+            # printer = PackagePrinter()
+            # printer.print_pickup_receipt(pickup_log)
             
             return Response(pickup_serializer.data, status=status.HTTP_201_CREATED)
         return Response(pickup_serializer.errors, status=status.HTTP_400_BAD_REQUEST)

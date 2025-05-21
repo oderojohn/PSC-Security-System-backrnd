@@ -131,7 +131,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://192.168.10.25:3000", 
-    "https://dropped-thailand-mathematics-hardwood.trycloudflare.com",
+    "https://festival-america-telecom-vice.trycloudflare.com",
 ]
 
 # Printer settings
