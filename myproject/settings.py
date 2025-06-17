@@ -82,8 +82,15 @@ WSGI_APPLICATION = 'myproject.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'parklands',
+        'USER': 'psc',
+        'PASSWORD': 'Psc@2020?',
+        'HOST': 'localhost',
+        'PORT': '3306',
+        'OPTIONS': {
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+        },
     }
 }
 
@@ -130,9 +137,10 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "http://192.168.10.25:3000", 
-    "https://festival-america-telecom-vice.trycloudflare.com",
+    "http://192.168.10.25:3000",
+    "http://192.168.3.5:3000"
 ]
+
 
 # Printer settings
 PRINTER_IP = "192.168.10.175"

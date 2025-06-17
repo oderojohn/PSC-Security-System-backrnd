@@ -40,13 +40,13 @@ class PackageViewSet(viewsets.ModelViewSet):
 
         if time_range == 'today':
             today = datetime.now().date()
-            queryset = queryset.filter(created_at__date=today)
+            queryset = queryset.filter(picked_at__date=today)
         elif time_range == 'week':
             week_ago = datetime.now() - timedelta(days=7)
-            queryset = queryset.filter(created_at__gte=week_ago)
+            queryset = queryset.filter(picked_at__gte=week_ago)
         elif time_range == 'month':
             month_ago = datetime.now() - timedelta(days=30)
-            queryset = queryset.filter(created_at__gte=month_ago)
+            queryset = queryset.filter(picked_at__gte=month_ago)
 
         return queryset.order_by('-created_at')
 
@@ -189,5 +189,7 @@ class PackageViewSet(viewsets.ModelViewSet):
 
     def _print_receipt(self, package_data):
         printer = PackagePrinter()
-        if not printer.print_package_receipt(package_data):
-            logger.error(f"Failed to print receipt for package {package_data['code']}")
+        if not printer.print_label_receipt(package_data):
+            logger.error(f"Failed to print label receipt for package {package_data['code']}")
+        if not printer.print_dropper_receipt(package_data):
+            logger.error(f"Failed to print dropper receipt for package {package_data['code']}")

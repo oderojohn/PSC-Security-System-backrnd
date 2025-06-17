@@ -1,43 +1,54 @@
+# models.py
 from django.db import models
 from django.utils import timezone
 import random
 import string
 
-def generate_package_code():
-    while True:
-        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        if not Package.objects.filter(code=code).exists():
-            return code
+MAX_SHELF_NUMBER = 200
 
-def get_lowest_unoccupied_shelf():
-    occupied = set(
-        Package.objects.filter(status=Package.PENDING)
+# --- Random suffix for code generation ---
+def generate_random_suffix(k=5):
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=k))
+
+# --- Get next available shelf for a given letter prefix ---
+def get_letter_based_shelf(letter):
+    prefix = letter.upper()
+    existing_shelves = set(
+        Package.objects.filter(status=Package.PENDING, shelf__startswith=prefix)
         .values_list('shelf', flat=True)
     )
-    for i in range(1, 1000): 
-        shelf = f"S{i}"
-        if shelf not in occupied:
+    for i in range(1, MAX_SHELF_NUMBER + 1):
+        shelf = f"{prefix}{i}"
+        if shelf not in existing_shelves:
             return shelf
-    return None  
+    return None  # All shelves used for that letter
+
+# --- Generate package code prefixed with shelf ---
+def generate_package_code(shelf):
+    while True:
+        suffix = generate_random_suffix(5)
+        code = f"{shelf}{suffix}"
+        if not Package.objects.filter(code=code).exists():
+            return code
 
 class Package(models.Model):
     PACKAGE = 'package'
     DOCUMENT = 'document'
-    KEYS='keys'
+    KEYS = 'keys'
     TYPE_CHOICES = [
         (PACKAGE, 'Package'),
         (DOCUMENT, 'Document'),
-        (KEYS,'keys'),
+        (KEYS, 'keys'),
     ]
-    
+
     PENDING = 'pending'
     PICKED = 'picked'
     STATUS_CHOICES = [
         (PENDING, 'Pending'),
         (PICKED, 'Picked'),
     ]
-    
-    code = models.CharField(max_length=8, default=generate_package_code, unique=True, editable=False)
+
+    code = models.CharField(max_length=32, unique=True, editable=False)
     type = models.CharField(max_length=10, choices=TYPE_CHOICES, default=PACKAGE)
     description = models.TextField()
     recipient_name = models.CharField(max_length=100)
@@ -48,7 +59,7 @@ class Package(models.Model):
 
     dropped_by = models.CharField(max_length=100)
     dropper_phone = models.CharField(max_length=20)
-    
+
     picked_by = models.CharField(max_length=100, blank=True, null=True)
     picker_phone = models.CharField(max_length=20, blank=True, null=True)
     picker_id = models.CharField(max_length=20, blank=True, null=True)
@@ -58,12 +69,19 @@ class Package(models.Model):
 
     class Meta:
         ordering = ['-created_at']
-    
+
     def save(self, *args, **kwargs):
-        if self.status == self.PENDING and not self.shelf:
-            self.shelf = get_lowest_unoccupied_shelf()
+        is_new = self.pk is None
+
+        if self.status == self.PENDING:
+            if not self.shelf:
+                first_letter = self.recipient_name.strip()[0].upper() if self.recipient_name else 'X'
+                self.shelf = get_letter_based_shelf(first_letter)
+            if not self.code:
+                self.code = generate_package_code(self.shelf)
         elif self.status == self.PICKED:
-            self.shelf = None  
+            self.shelf = None
+
         super().save(*args, **kwargs)
 
     def __str__(self):
