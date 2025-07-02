@@ -1,97 +1,152 @@
-import socket
 from datetime import datetime
+from escpos.printer import Network
+import time
+import re
 
 class PackagePrinter:
-    def __init__(self, ip="192.168.110.175", port=9100):
+    def __init__(self, ip="192.168.10.173", port=9100, max_retries=3, retry_delay=2):
         self.PRINTER_IP = ip
         self.PRINTER_PORT = port
+        self.MAX_RETRIES = max_retries
+        self.RETRY_DELAY = retry_delay
+        self.bw_image_path = r"C:\Users\IT.Trainee\Desktop\Reception system\logo-dark.bmp"
+        
+        # Predefined size commands
+        self.zes = [
+            ('1x1', b'\x1D\x21\x00'),
+            ('2x1', b'\x1D\x21\x10'),
+            ('1x2', b'\x1D\x21\x01'),
+            ('2x2', b'\x1D\x21\x11'),
+            ('3x3', b'\x1D\x21\x22')
+        ]
 
-        self.ESC = b'\x1b'
-        self.GS = b'\x1d'
-        self.BOLD_ON = self.ESC + b'\x45\x01'
-        self.BOLD_OFF = self.ESC + b'\x45\x00'
-        self.QUAD_SIZE_ON = self.GS + b'\x21\x33'
-        self.NORMAL_SIZE = self.GS + b'\x21\x00'
-        self.CENTER_ALIGN = self.ESC + b'\x61\x01'
-        self.LEFT_ALIGN = self.ESC + b'\x61\x00'
-        self.LINE_FEED = b'\n'
-        self.CUT = self.GS + b'V\x00'
+    def _mask_phone(self, phone):
+        """Mask phone numbers to show first 4 and last 2 digits (0792******01)"""
+        if not phone:
+            return ""
+        
+        # Remove any non-digit characters
+        digits = re.sub(r'\D', '', phone)
+        
+        if len(digits) >= 6:
+            return f"{digits[:4]}******{digits[-2:]}"
+        return phone  # Return original if too short to mask
 
-    def _send_header(self, printer):
-        printer.sendall(self.CENTER_ALIGN + self.BOLD_ON)
-        printer.sendall(b"PARKLANDS SPORTS CLUB\n")
-        printer.sendall(self.BOLD_OFF)
-        printer.sendall(b"PO BOX 123-456, NAIROBI\n")
-        printer.sendall(b"Tel: 0712 345 6789\n")
-        printer.sendall(b"www.parklandssportsclub.org\n\n")
+    def _get_printer(self):
+        """Establish connection to printer with retry logic"""
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                printer = Network(self.PRINTER_IP, self.PRINTER_PORT)
+                return printer
+            except Exception as e:
+                if attempt == self.MAX_RETRIES - 1:
+                    raise
+                print(f"Connection attempt {attempt + 1} failed: {str(e)} - retrying...")
+                time.sleep(self.RETRY_DELAY)
+        return None
 
-    def _send_footer(self, printer):
-        printer.sendall(b"\n" * 2 + self.CENTER_ALIGN + self.BOLD_ON)
-        printer.sendall(b"Thank you for using PSC Package Service\n")
-        printer.sendall(b"Handled by PSC Security\n")
-        printer.sendall(b"Designed by JOHN ODERO\n")
-        printer.sendall(self.BOLD_OFF + b"\n")
-        printer.sendall(b"\n" * 3)
-        printer.sendall(self.CUT)
+    def _set_size(self, printer, size_name):
+        """Set text size using predefined zes commands"""
+        for name, cmd in self.zes:
+            if name == size_name:
+                printer._raw(cmd)
+                return
+        printer._raw(self.zes[0][1])  # Default to 1x1 if not found
+
+    def _print_common_header(self, printer, title, code):
+        """Print common header for both receipt types"""
+        try:
+            printer.image(self.bw_image_path)
+        except Exception as img_error:
+            print(f"Couldn't print image: {img_error}")
+        
+        # Set larger size for code
+        self._set_size(printer, '2x2')
+        printer.set(align='center', bold=True)
+        printer.text(f"{code}\n")
+        self._set_size(printer, '1x1')  # Reset size
+        
+        printer.set(align='left', bold=False)
+        printer.text("\n------------------------------------------\n")
 
     def print_label_receipt(self, package_data):
+        """Print the package label receipt with enhanced styling"""
+        printer = None
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as printer:
-                printer.connect((self.PRINTER_IP, self.PRINTER_PORT))
-
-                self._send_header(printer)
-
-                printer.sendall(self.BOLD_ON + b"PACKAGE RECEIPT\n")
-                printer.sendall(self.BOLD_OFF + self.LINE_FEED)
-
-                printer.sendall(self.CENTER_ALIGN + self.BOLD_ON + self.QUAD_SIZE_ON)
-                printer.sendall(f"{package_data['code']}\n".encode('utf-8'))
-                printer.sendall(self.NORMAL_SIZE + self.BOLD_OFF + self.LINE_FEED)
-
-                printer.sendall(self.LEFT_ALIGN + self.BOLD_ON + b"Details\n")
-                printer.sendall(self.BOLD_OFF + b"-----------------------------\n")
-                printer.sendall(self.BOLD_ON + b"Type: " + self.BOLD_OFF + package_data['type'].encode() + self.LINE_FEED)
-                printer.sendall(self.BOLD_ON + b"Desc: " + self.BOLD_OFF + package_data['description'].encode() + self.LINE_FEED)
-                if package_data.get('shelf'):
-                    printer.sendall(self.BOLD_ON + b"Shelf: " + self.BOLD_OFF + package_data['shelf'].encode() + self.LINE_FEED)
-
-                printer.sendall(self.BOLD_ON + b"Recipient: " + self.BOLD_OFF + package_data['recipient_name'].encode() + b" (" + package_data['recipient_phone'].encode() + b")" + self.LINE_FEED)
-
-                printer.sendall(self.BOLD_ON + b"Dropper: " + self.BOLD_OFF + package_data['dropped_by'].encode() + b" (" + package_data['dropper_phone'].encode() + b")" + self.LINE_FEED)
-
-                printer.sendall(self.BOLD_ON + b"Date: " + self.BOLD_OFF + datetime.now().strftime("%Y-%m-%d %H:%M").encode() + self.LINE_FEED)
-                if 'created_by' in package_data:
-                    printer.sendall(self.BOLD_ON + b"By: " + self.BOLD_OFF + package_data['created_by'].encode() + self.LINE_FEED)
-
-                self._send_footer(printer)
+            printer = self._get_printer()
+            if not printer:
+                return False
+                
+            # Mask phone numbers before printing
+            package_data['recipient_phone'] = self._mask_phone(package_data.get('recipient_phone', ''))
+            package_data['dropper_phone'] = self._mask_phone(package_data.get('dropper_phone', ''))
+            
+            # Capitalize recipient name
+            recipient_name = package_data['recipient_name'].upper()
+                
+            self._print_common_header(printer, "PACKAGE RECEIPT", recipient_name)
+            
+            # Extra large recipient name
+            self._set_size(printer, '3x3')
+            printer.set(align='center', bold=True)
+            printer.text(recipient_name + "\n\n")
+            self._set_size(printer, '1x1')  # Reset size
+            
+            printer.set(bold=True)
+            printer.text("PACKAGE DETAILS\n")
+            printer.set(bold=False)
+            printer.text("-----------------------------\n")
+            
+            printer.text(f"Type: {package_data['type']}\n")
+            printer.text(f"Code: {package_data['code']}\n")
+            printer.text(f"Description: {package_data['description']}\n")
+            if package_data.get('shelf'):
+                printer.text(f"Shelf: {package_data['shelf']}\n")
+            
+            printer.text("\n")
+            
+            # Medium size for section headers
+            self._set_size(printer, '2x1')
+            printer.set(align='center', bold=True)
+            printer.text("RECIPIENT INFORMATION\n")
+            self._set_size(printer, '1x1')
+            
+            printer.set(align='left', bold=True)
+            printer.text(f"Name: {recipient_name}\n")
+            printer.set(bold=False)
+            printer.text(f"Phone: {package_data['recipient_phone']}\n")
+            
+            printer.text("\n")
+            printer.set(bold=True)
+            printer.text("DELIVERY INFORMATION\n")
+            printer.set(bold=False)
+            printer.text(f"Dropped by: {package_data['dropped_by']}\n")
+            printer.text(f"Phone: {package_data['dropper_phone']}\n")
+            
+            printer.text("\n")
+            printer.text(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+            if 'created_by' in package_data:
+                printer.text(f"Processed by: {package_data['created_by']}\n")
+            
+            printer.text("\n")
+            printer.set(align='center', bold=True)
+            printer.text("Thank you for using\nPSC Package Service\n")
+            printer.set(bold=False)
+            printer.text("Handled by PSC Security\n")
+            printer.text("Designed by JOHN ODERO\n\n")
+            printer.cut()
             return True
         except Exception as e:
             print(f"Label print failed: {e}")
             return False
+        finally:
+            if printer:
+                printer.close()
 
-    def print_dropper_receipt(self, package_data):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as printer:
-                printer.connect((self.PRINTER_IP, self.PRINTER_PORT))
-
-                self._send_header(printer)
-                printer.sendall(self.BOLD_ON + b"OFFICIAL DROP RECEIPT\n" + self.BOLD_OFF)
-                printer.sendall(self.CENTER_ALIGN + self.BOLD_ON + self.QUAD_SIZE_ON)
-                printer.sendall(f"{package_data['code']}\n".encode())
-                printer.sendall(self.NORMAL_SIZE + self.BOLD_OFF + self.LINE_FEED)
-
-                printer.sendall(self.LEFT_ALIGN + self.BOLD_ON + b"Confirmation\n")
-                printer.sendall(self.BOLD_OFF + b"-----------------------------\n")
-                printer.sendall(b"This acknowledges receipt of a package\n")
-                printer.sendall(b"delivered by:\n\n")
-                printer.sendall(self.BOLD_ON + b"Name: " + self.BOLD_OFF + package_data['dropped_by'].encode() + self.LINE_FEED)
-                printer.sendall(self.BOLD_ON + b"Phone: " + self.BOLD_OFF + package_data['dropper_phone'].encode() + self.LINE_FEED)
-                printer.sendall(self.BOLD_ON + b"Date: " + self.BOLD_OFF + datetime.now().strftime("%Y-%m-%d %H:%M").encode() + self.LINE_FEED)
-
-                printer.sendall(b"\nKeep this receipt for your records.\n")
-
-                self._send_footer(printer)
-            return True
-        except Exception as e:
-            print(f"Dropper print failed: {e}")
-            return False
+    def print_both_receipts(self, package_data):
+        """
+        Print both label and dropper receipts consecutively
+        Returns tuple of (label_success, dropper_success)
+        """
+        label_success = self.print_label_receipt(package_data)
+        return (label_success)

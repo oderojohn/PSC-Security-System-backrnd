@@ -191,5 +191,4 @@ class PackageViewSet(viewsets.ModelViewSet):
         printer = PackagePrinter()
         if not printer.print_label_receipt(package_data):
             logger.error(f"Failed to print label receipt for package {package_data['code']}")
-        if not printer.print_dropper_receipt(package_data):
-            logger.error(f"Failed to print dropper receipt for package {package_data['code']}")
+        
