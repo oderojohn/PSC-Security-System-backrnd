@@ -36,8 +36,10 @@ class LostItem(BaseItem):
     card_last_four = models.CharField(max_length=4, blank=True, null=True)
     place_lost = models.CharField(max_length=200)
     reporter_phone = models.CharField(max_length=20)
+    reporter_email = models.EmailField(blank=True, null=True)
     reporter_member_id = models.CharField(max_length=20, blank=True, null=True)
     reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='lost_items')
+
 
     def __str__(self):
         if self.type == self.CARD:
@@ -52,11 +54,14 @@ class FoundItem(BaseItem):
     finder_phone = models.CharField(max_length=20)
     finder_name = models.CharField(max_length=100)
     reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='found_items')
+    photo = models.ImageField(upload_to="found_items/photos/", blank=True, null=True)  # New photo field
 
     def __str__(self):
         if self.type == self.CARD:
             return f"Found Card ({self.card_last_four})"
         return f"Found {self.item_name}"
+
+
 
 class PickupLog(models.Model):
     item = models.ForeignKey(FoundItem, on_delete=models.CASCADE, related_name='pickup_logs')

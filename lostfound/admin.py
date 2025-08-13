@@ -9,7 +9,7 @@ class LostItemAdmin(admin.ModelAdmin):
 
 @admin.register(FoundItem)
 class FoundItemAdmin(admin.ModelAdmin):
-    list_display = ('type', 'item_name', 'card_last_four', 'owner_name', 'place_found', 'status')
+    list_display = ('type', 'item_name', 'card_last_four', 'owner_name', 'place_found', 'status','photo')
     list_filter = ('type', 'status')
     search_fields = ('item_name', 'card_last_four', 'owner_name')
 

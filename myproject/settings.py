@@ -139,7 +139,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://192.168.10.25:3000",
-    "http://192.168.3.5:3000"
+    "http://192.168.3.5:3000",
+    "https://ap-calculated-funeral-ic.trycloudflare.com"
 ]
 
 
@@ -178,7 +179,8 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     )
 }
-
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 # JWT Settings
 from datetime import timedelta
 
