@@ -1,3 +1,5 @@
+import uuid
+import threading
 from rest_framework import viewsets, status, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -23,6 +25,7 @@ from io import BytesIO
 from .PackagePrinter import PackagePrinter
 from collections import defaultdict
 from django.db.models.functions import TruncDay
+from lostfound.email.lost_match import send_report_acknowledgment, send_match_notification
 
 
 
@@ -70,15 +73,86 @@ class ReportMixin:
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class LostItemViewSet(ReportMixin, viewsets.ModelViewSet):
+
+def safe_lower(value):
+    """Lowercase safely, handle None as empty string."""
+    return value.lower().strip() if isinstance(value, str) else ""
+
+
+def calculate_match_score(lost_item, found_item):
+    """Calculate similarity score between lost and found items."""
+    scores = []
+
+    # Type match
+    if lost_item.type == found_item.type:
+        scores.append(0.3)
+
+    # Name similarity
+    name_similarity = SequenceMatcher(
+        None, safe_lower(lost_item.item_name), safe_lower(found_item.item_name)
+    ).ratio()
+    scores.append(name_similarity * 0.2)
+
+    # Description similarity
+    desc_similarity = SequenceMatcher(
+        None, safe_lower(lost_item.description), safe_lower(found_item.description)
+    ).ratio()
+    scores.append(desc_similarity * 0.2)
+
+    # Location similarity
+    location_similarity = SequenceMatcher(
+        None, safe_lower(lost_item.place_lost), safe_lower(found_item.place_found)
+    ).ratio()
+    scores.append(location_similarity * 0.15)
+
+    # Time difference score
+    time_diff = abs((lost_item.date_reported - found_item.date_reported).total_seconds())
+    time_score = max(0, 1 - (time_diff / (7 * 24 * 3600)))  # Decay after 7 days
+    scores.append(time_score * 0.15)
+
+    return min(1.0, sum(scores))
+
+
+def get_match_reasons(lost_item, found_item):
+    """Return human-readable reasons for a match."""
+    reasons = []
+
+    if lost_item.type == found_item.type:
+        reasons.append(f"Matching type: {lost_item.type}")
+
+    name_ratio = SequenceMatcher(None, safe_lower(lost_item.item_name), safe_lower(found_item.item_name)).ratio()
+    if name_ratio > 0.7:
+        reasons.append(f"Similar item names ({name_ratio:.0%} match)")
+
+    desc_ratio = SequenceMatcher(None, safe_lower(lost_item.description), safe_lower(found_item.description)).ratio()
+    if desc_ratio > 0.6:
+        reasons.append(f"Similar descriptions ({desc_ratio:.0%} match)")
+
+    loc_ratio = SequenceMatcher(None, safe_lower(lost_item.place_lost), safe_lower(found_item.place_found)).ratio()
+    if loc_ratio > 0.7:
+        reasons.append(f"Similar locations ({loc_ratio:.0%} match)")
+
+    time_diff = abs((lost_item.date_reported - found_item.date_reported).total_seconds())
+    if time_diff < 24 * 3600:
+        hours = int(time_diff / 3600)
+        reasons.append(f"Reported within {hours} hour{'s' if hours != 1 else ''} of each other")
+
+    return reasons
+
+
+# --- Lost Item ViewSet ---
+class LostItemViewSet(viewsets.ModelViewSet):
     queryset = LostItem.objects.all().order_by('-date_reported')
     serializer_class = LostItemSerializer
     permission_classes = [IsAuthenticated, IsStaffOrReadOnly]
 
     def perform_create(self, serializer):
-        lost_item = serializer.save(reported_by=self.request.user)
+        lost_item = serializer.save(
+            reported_by=self.request.user,
+            tracking_id=f"LI-{uuid.uuid4().hex[:8].upper()}"
+        )
 
-        # Find matches immediately after reporting
+        # Search for recent found items
         days_back = 7
         similarity_threshold = 0.6
         recent_found_items = FoundItem.objects.filter(
@@ -88,17 +162,32 @@ class LostItemViewSet(ReportMixin, viewsets.ModelViewSet):
 
         matches = []
         for found_item in recent_found_items:
-            score = self.calculate_match_score(lost_item, found_item)
+            score = calculate_match_score(lost_item, found_item)
             if score >= similarity_threshold:
-                matches.append({
+                match_data = {
                     'lost_item': LostItemSerializer(lost_item).data,
                     'found_item': FoundItemSerializer(found_item).data,
-                    'match_score': score,
-                    'match_reasons': self.get_match_reasons(lost_item, found_item, score)
-                })
+                    'match_score': round(score * 100, 2),
+                    'match_reasons': get_match_reasons(lost_item, found_item)
+                }
+                matches.append(match_data)
+
+                # Send notification for this specific match
+                threading.Thread(
+                    target=send_match_notification,
+                    args=(lost_item, [match_data]),
+                    daemon=True
+                ).start()
 
         matches.sort(key=lambda x: x['match_score'], reverse=True)
         self.matches = matches
+
+        # Always send acknowledgment to lost reporter
+        threading.Thread(
+            target=send_report_acknowledgment,
+            args=(lost_item,),
+            daemon=True
+        ).start()
 
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
@@ -136,119 +225,45 @@ class LostItemViewSet(ReportMixin, viewsets.ModelViewSet):
 
         return queryset
 
-    def calculate_match_score(self, lost_item, found_item):
-        scores = []
-        if lost_item.type == found_item.type:
-            scores.append(0.3)
 
-        name_similarity = SequenceMatcher(
-            None, lost_item.item_name.lower(), found_item.item_name.lower()
-        ).ratio()
-        scores.append(name_similarity * 0.2)
-
-        desc_similarity = SequenceMatcher(
-            None, lost_item.description.lower(), found_item.description.lower()
-        ).ratio()
-        scores.append(desc_similarity * 0.2)
-
-        location_similarity = SequenceMatcher(
-            None, lost_item.place_lost.lower(), found_item.place_found.lower()
-        ).ratio()
-        scores.append(location_similarity * 0.15)
-
-        time_diff = abs((lost_item.date_reported - found_item.date_reported).total_seconds())
-        time_score = max(0, 1 - (time_diff / (7 * 24 * 3600)))
-        scores.append(time_score * 0.15)
-
-        return min(1.0, sum(scores))
-
-    def get_match_reasons(self, lost_item, found_item, score):
-        reasons = []
-        if lost_item.type == found_item.type:
-            reasons.append(f"Matching type: {lost_item.type}")
-
-        name_ratio = SequenceMatcher(None, lost_item.item_name.lower(), found_item.item_name.lower()).ratio()
-        if name_ratio > 0.7:
-            reasons.append(f"Similar item names ({name_ratio:.0%} match)")
-
-        desc_ratio = SequenceMatcher(None, lost_item.description.lower(), found_item.description.lower()).ratio()
-        if desc_ratio > 0.6:
-            reasons.append(f"Similar descriptions ({desc_ratio:.0%} match)")
-
-        loc_ratio = SequenceMatcher(None, lost_item.place_lost.lower(), found_item.place_found.lower()).ratio()
-        if loc_ratio > 0.7:
-            reasons.append(f"Similar locations ({loc_ratio:.0%} match)")
-
-        time_diff = abs((lost_item.date_reported - found_item.date_reported).total_seconds())
-        if time_diff < 24 * 3600:
-            hours = int(time_diff / 3600)
-            reasons.append(f"Reported within {hours} hour{'s' if hours != 1 else ''} of each other")
-
-        return reasons
-
-class FoundItemViewSet(ReportMixin, viewsets.ModelViewSet):
+# --- Found Item ViewSet ---
+class FoundItemViewSet(viewsets.ModelViewSet):
     queryset = FoundItem.objects.all().order_by('-date_reported')
     serializer_class = FoundItemSerializer
     permission_classes = [IsAuthenticated, IsStaffOrReadOnly]
 
     def perform_create(self, serializer):
         found_item = serializer.save(reported_by=self.request.user)
-        printer = PackagePrinter()
-        printer.print_found_receipt(found_item)
 
-    def get_queryset(self):
-        queryset = super().get_queryset()
-        status_param = self.request.query_params.get('status')
-        search = self.request.query_params.get('search')
-        time_frame = self.request.query_params.get('time_frame')
+        # Print receipt
+        PackagePrinter().print_found_receipt(found_item)
 
-        if status_param:
-            queryset = queryset.filter(status=status_param)
+        similarity_threshold = 0.5
+        recent_lost_items = LostItem.objects.all()
 
-        if search:
-            queryset = queryset.filter(
-                Q(item_name__icontains=search) |
-                Q(description__icontains=search) |
-                Q(card_last_four__icontains=search) |
-                Q(owner_name__icontains=search) |
-                Q(place_found__icontains=search) |
-                Q(finder_name__icontains=search)
-            )
+        matches_sent = []
+        for lost_item in recent_lost_items:
+            score = calculate_match_score(lost_item, found_item)
+            if score >= similarity_threshold:
+                match_data = {
+                    'lost_item': LostItemSerializer(lost_item).data,
+                    'found_item': FoundItemSerializer(found_item).data,
+                    'match_score': round(score * 100, 2),
+                    'match_reasons': get_match_reasons(lost_item, found_item),
+                    'sent_to': lost_item.reporter_email
+                }
+                send_match_notification(lost_item, [match_data])
+                matches_sent.append(match_data)
 
-        if time_frame:
-            now = timezone.now()
-            if time_frame == 'today':
-                queryset = queryset.filter(date_reported__date=now.date())
-            elif time_frame == 'week':
-                queryset = queryset.filter(date_reported__gte=now - timedelta(days=7))
-            elif time_frame == 'month':
-                queryset = queryset.filter(date_reported__gte=now - timedelta(days=30))
+        self.matches_sent = matches_sent
 
-        return queryset
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        if hasattr(self, 'matches_sent'):
+            response.data['matches_sent'] = self.matches_sent
+        return response
 
-    @action(detail=True, methods=['post'])
-    def pick(self, request, pk=None):
-        found_item = self.get_object()
 
-        if found_item.status == 'claimed':
-            return Response({'error': 'Item has already been claimed'}, status=status.HTTP_400_BAD_REQUEST)
-
-        pickup_data = {
-            'item': found_item.id,
-            'picked_by_member_id': request.data.get('memberId'),
-            'picked_by_name': request.data.get('name'),
-            'picked_by_phone': request.data.get('phone'),
-            'verified_by': request.user.id
-        }
-
-        pickup_serializer = PickupLogSerializer(data=pickup_data)
-        if pickup_serializer.is_valid():
-            pickup_log = pickup_serializer.save()
-            found_item.status = 'claimed'
-            found_item.save()
-            return Response(pickup_serializer.data, status=status.HTTP_201_CREATED)
-
-        return Response(pickup_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class ItemStatsViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]

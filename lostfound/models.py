@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth import get_user_model
-
+import uuid
 User = get_user_model()
 
 class BaseItem(models.Model):
@@ -39,6 +39,12 @@ class LostItem(BaseItem):
     reporter_email = models.EmailField(blank=True, null=True)
     reporter_member_id = models.CharField(max_length=20, blank=True, null=True)
     reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='lost_items')
+    tracking_id = models.CharField(max_length=50, unique=True, blank=True, null=True)
+
+    def save(self, *args, **kwargs):
+        if not self.tracking_id:
+            self.tracking_id = f"LI-{uuid.uuid4().hex[:8].upper()}"
+        super().save(*args, **kwargs)
 
 
     def __str__(self):
@@ -54,7 +60,7 @@ class FoundItem(BaseItem):
     finder_phone = models.CharField(max_length=20)
     finder_name = models.CharField(max_length=100)
     reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='found_items')
-    photo = models.ImageField(upload_to="found_items/photos/", blank=True, null=True)  # New photo field
+    photo = models.ImageField(upload_to="found_items/photos/", blank=True, null=True) 
 
     def __str__(self):
         if self.type == self.CARD:
