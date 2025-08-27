@@ -4,7 +4,7 @@ from datetime import datetime
 class PackagePrinter:
     """Handles printing of package receipts using ESC/POS commands"""
 
-    def __init__(self, ip="192.168.10.175", port=9100):
+    def __init__(self, ip="192.168.", port=9100):
         self.PRINTER_IP = ip
         self.PRINTER_PORT = port
 
@@ -19,7 +19,7 @@ class PackagePrinter:
         self.LEFT_ALIGN = self.ESC + b'\x61\x00'
         self.LINE_FEED = b'\n'
         self.CUT = self.GS + b'V\x00'
-
+    
     def print_found_receipt(self, found_item):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as printer:
@@ -87,6 +87,50 @@ class PackagePrinter:
                 printer.sendall(self.CUT)
 
             return True
+        
         except Exception as e:
             print(f"Printing failed: {str(e)}")
+            return False
+        
+    def print_match_receipts(self, matches):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as printer:
+                printer.connect((self.PRINTER_IP, self.PRINTER_PORT))
+
+                printer.sendall(self.CENTER_ALIGN + self.BOLD_ON)
+                printer.sendall(b"PARKLANDS SPORTS CLUB - LOST+FOUND\n")
+                printer.sendall(self.BOLD_OFF + b"\n")
+
+                for i, match_data in enumerate(matches, start=1):
+                    lost = match_data['lost_item']
+                    found = match_data['found_item']
+
+                    printer.sendall(self.CENTER_ALIGN + self.BOLD_ON)
+                    printer.sendall(f"MATCH #{i}\n".encode('utf-8'))
+                    printer.sendall(self.BOLD_OFF)
+
+                    printer.sendall(self.LEFT_ALIGN + b"Lost Item: " + str(lost['item_name']).encode() + b"\n")
+                    printer.sendall(b"Desc: " + str(lost['description']).encode() + b"\n")
+                    printer.sendall(b"Lost at: " + str(lost['place_lost']).encode() + b"\n")
+                    printer.sendall(b"Reporter: " + str(lost.get('reporter_email', '')).encode() + b"\n\n")
+
+                    printer.sendall(self.LEFT_ALIGN + b"Found Item: " + str(found['item_name']).encode() + b"\n")
+                    printer.sendall(b"Desc: " + str(found['description']).encode() + b"\n")
+                    printer.sendall(b"Found at: " + str(found['place_found']).encode() + b"\n")
+                    printer.sendall(b"Finder: " + str(found.get('finder_name', '')).encode() + b"\n")
+                    printer.sendall(b"-" * 32 + b"\n\n")  # separator between matches
+
+                # Footer + cut once at the end
+                printer.sendall(self.CENTER_ALIGN + self.BOLD_ON)
+                printer.sendall(b"\nEnd of Match Report\n")
+                printer.sendall(b"PSC ICT Department\n")
+                printer.sendall(self.BOLD_OFF + b"\n")
+
+                printer.sendall(b"\n" * 4)
+                printer.sendall(self.CUT)
+
+            return True
+
+        except Exception as e:
+            print(f"Printing failed: {e}")
             return False

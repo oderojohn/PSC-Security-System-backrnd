@@ -81,11 +81,15 @@ def safe_lower(value):
 
 def calculate_match_score(lost_item, found_item):
     """Calculate similarity score between lost and found items."""
+
+    # If types do not match, stop immediately (no score)
+    if lost_item.type != found_item.type:
+        return 0.0  
+
     scores = []
 
-    # Type match
-    if lost_item.type == found_item.type:
-        scores.append(0.3)
+    # Type match bonus (only reached if same type)
+    scores.append(0.3)
 
     # Name similarity
     name_similarity = SequenceMatcher(
@@ -112,10 +116,12 @@ def calculate_match_score(lost_item, found_item):
 
     return min(1.0, sum(scores))
 
-
 def get_match_reasons(lost_item, found_item):
     """Return human-readable reasons for a match."""
     reasons = []
+
+    if lost_item.type != found_item.type:
+        return ["Different item types (no valid match)"]
 
     if lost_item.type == found_item.type:
         reasons.append(f"Matching type: {lost_item.type}")
@@ -152,15 +158,12 @@ class LostItemViewSet(viewsets.ModelViewSet):
             tracking_id=f"LI-{uuid.uuid4().hex[:8].upper()}"
         )
 
-        # Search for recent found items
         days_back = 7
         similarity_threshold = 0.6
-        recent_found_items = FoundItem.objects.filter(
-            status='found',
-            date_reported__gte=timezone.now() - timedelta(days=days_back)
-        )
+        recent_found_items = FoundItem.objects.filter(status='found')
 
         matches = []
+        recipients = []
         for found_item in recent_found_items:
             score = calculate_match_score(lost_item, found_item)
             if score >= similarity_threshold:
@@ -171,8 +174,8 @@ class LostItemViewSet(viewsets.ModelViewSet):
                     'match_reasons': get_match_reasons(lost_item, found_item)
                 }
                 matches.append(match_data)
+                recipients.append(lost_item.reporter_email)
 
-                # Send notification for this specific match
                 threading.Thread(
                     target=send_match_notification,
                     args=(lost_item, [match_data]),
@@ -181,8 +184,8 @@ class LostItemViewSet(viewsets.ModelViewSet):
 
         matches.sort(key=lambda x: x['match_score'], reverse=True)
         self.matches = matches
+        self.recipients = recipients
 
-        # Always send acknowledgment to lost reporter
         threading.Thread(
             target=send_report_acknowledgment,
             args=(lost_item,),
@@ -192,38 +195,22 @@ class LostItemViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
         if hasattr(self, 'matches') and self.matches:
-            response.data['potential_matches'] = self.matches
+            response.data['matches'] = self.matches
+            response.data['acknowledgment'] = f"{len(self.matches)} matches found and emails sent to: {', '.join(set(self.recipients))}"
+        else:
+            response.data['acknowledgment'] = "Acknowledgment email sent to reporter."
         return response
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        status_param = self.request.query_params.get('status')
-        search = self.request.query_params.get('search')
-        time_frame = self.request.query_params.get('time_frame')
+        qs = super().get_queryset()
+        item_type = self.request.query_params.get('type')  # ?type=card OR ?type=item
 
-        if status_param:
-            queryset = queryset.filter(status=status_param)
+        if item_type == 'card':
+            qs = qs.filter(type='card')
+        elif item_type == 'item':
+            qs = qs.filter(type='item')
 
-        if search:
-            queryset = queryset.filter(
-                Q(item_name__icontains=search) |
-                Q(description__icontains=search) |
-                Q(card_last_four__icontains=search) |
-                Q(owner_name__icontains=search) |
-                Q(place_lost__icontains=search) |
-                Q(reporter_member_id__icontains=search)
-            )
-
-        if time_frame:
-            now = timezone.now()
-            if time_frame == 'today':
-                queryset = queryset.filter(date_reported__date=now.date())
-            elif time_frame == 'week':
-                queryset = queryset.filter(date_reported__gte=now - timedelta(days=7))
-            elif time_frame == 'month':
-                queryset = queryset.filter(date_reported__gte=now - timedelta(days=30))
-
-        return queryset
+        return qs
 
 
 # --- Found Item ViewSet ---
@@ -235,13 +222,13 @@ class FoundItemViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         found_item = serializer.save(reported_by=self.request.user)
 
-        # Print receipt
         PackagePrinter().print_found_receipt(found_item)
 
         similarity_threshold = 0.5
         recent_lost_items = LostItem.objects.all()
 
         matches_sent = []
+        recipients = []
         for lost_item in recent_lost_items:
             score = calculate_match_score(lost_item, found_item)
             if score >= similarity_threshold:
@@ -254,15 +241,139 @@ class FoundItemViewSet(viewsets.ModelViewSet):
                 }
                 send_match_notification(lost_item, [match_data])
                 matches_sent.append(match_data)
+                recipients.append(lost_item.reporter_email)
 
         self.matches_sent = matches_sent
+        self.recipients = recipients
 
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
-        if hasattr(self, 'matches_sent'):
-            response.data['matches_sent'] = self.matches_sent
+
+        if hasattr(self, 'matches_sent') and self.matches_sent:
+            response.data['matches'] = self.matches_sent
+
+            # ✅ Clean recipients: remove None/empty and force str
+            valid_recipients = [str(r) for r in getattr(self, 'recipients', []) if r]
+
+            if valid_recipients:
+                response.data['acknowledgment'] = (
+                    f"{len(self.matches_sent)} matches found and emails sent to: {', '.join(set(valid_recipients))}"
+                )
+            else:
+                response.data['acknowledgment'] = f"{len(self.matches_sent)} matches found, but no valid email recipients."
+        else:
+            response.data['acknowledgment'] = "Acknowledgment email sent to reporter."
+
         return response
 
+    
+    @action(detail=False, methods=['get'], url_path='generate_matches')
+    def generate_matches(self, request):
+        similarity_threshold = 0.5
+        tracking_id = request.query_params.get('tracking_id')
+
+        lost_items = LostItem.objects.all()
+        found_items = FoundItem.objects.all()
+
+        if tracking_id:
+            lost_items = lost_items.filter(tracking_id=tracking_id) | lost_items.none()
+            found_items = found_items.filter(tracking_id=tracking_id) | found_items.none()
+
+        matches = []
+        for lost in lost_items:
+            for found in found_items:
+                if lost.type != found.type:  # ✅ enforce type matching
+                    continue
+                score = calculate_match_score(lost, found)
+                if score >= similarity_threshold:
+                    matches.append({
+                        'lost_item': LostItemSerializer(lost).data,
+                        'found_item': FoundItemSerializer(found).data,
+                        'match_score': round(score * 100, 2),
+                        'match_reasons': get_match_reasons(lost, found)
+                    })
+
+        matches.sort(key=lambda x: x['match_score'], reverse=True)
+        return Response({'matches': matches})
+    @action(detail=False, methods=['post'], url_path='print_match')
+    def print_match(self, request):
+        """
+        Print a chit for matches by tracking_id.
+        - If tracking_id belongs to a LostItem.tracking_id -> match that lost item against all found items.
+        - If tracking_id is a FoundItem.id (integer) -> match that found item against all lost items.
+        """
+        tracking_id = request.query_params.get('tracking_id')
+        if not tracking_id:
+            return Response(
+                {"error": "tracking_id is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        lost_items = None
+        found_items = None
+
+        # Case 1: Looks like a LostItem tracking_id
+        if tracking_id.startswith("LI-"):
+            lost_items = LostItem.objects.filter(tracking_id=tracking_id)
+            if not lost_items.exists():
+                return Response(
+                    {"error": f"No LostItem found for tracking_id={tracking_id}"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            found_items = FoundItem.objects.all()
+
+        else:
+            # Case 2: Must be a FoundItem.id (integer)
+            try:
+                found_item_id = int(tracking_id)
+                found_item = FoundItem.objects.get(id=found_item_id)
+                found_items = [found_item]
+                lost_items = LostItem.objects.all()
+            except (ValueError, FoundItem.DoesNotExist):
+                return Response(
+                    {"error": f"No LostItem or FoundItem found for tracking_id={tracking_id}"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        similarity_threshold = 0.5
+        matches = []
+
+        for lost in lost_items:
+            for found in found_items:
+                if lost.type != found.type:
+                    continue
+                score = calculate_match_score(lost, found)
+                if score >= similarity_threshold:
+                    match_data = {
+                        "lost_item": LostItemSerializer(lost).data,
+                        "found_item": FoundItemSerializer(found).data,
+                        "match_score": round(score * 100, 2),
+                        "match_reasons": get_match_reasons(lost, found),
+                    }
+                    matches.append(match_data)
+                    PackagePrinter().print_match_receipt(match_data)
+
+        if not matches:
+            return Response(
+                {"message": f"No matches found for tracking_id={tracking_id}"},
+                status=status.HTTP_200_OK
+            )
+
+        return Response({
+            "status": "success",
+            "acknowledgment": f"{len(matches)} match chit(s) printed for tracking_id={tracking_id}",
+            "matches": matches
+        }, status=status.HTTP_200_OK)
+    def get_queryset(self):
+        qs = super().get_queryset()
+        item_type = self.request.query_params.get('type')  # ?type=card or ?type=item
+
+        if item_type == 'card':
+            qs = qs.filter(type='card')
+        elif item_type == 'item':
+            qs = qs.exclude(type='card')
+
+        return qs
 
 
 class ItemStatsViewSet(viewsets.ViewSet):

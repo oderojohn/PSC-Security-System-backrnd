@@ -33,9 +33,9 @@ class BaseItem(models.Model):
 class LostItem(BaseItem):
     item_name = models.CharField(max_length=100, blank=True, null=True)
     description = models.TextField(blank=True, null=True)
-    card_last_four = models.CharField(max_length=4, blank=True, null=True)
-    place_lost = models.CharField(max_length=200)
-    reporter_phone = models.CharField(max_length=20)
+    card_last_four = models.CharField(max_length=5, blank=True, null=True)
+    place_lost = models.CharField(max_length=200, blank=True, null=True)
+    reporter_phone = models.CharField(max_length=20, blank=True, null=True)
     reporter_email = models.EmailField(blank=True, null=True)
     reporter_member_id = models.CharField(max_length=20, blank=True, null=True)
     reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='lost_items')
@@ -55,10 +55,10 @@ class LostItem(BaseItem):
 class FoundItem(BaseItem):
     item_name = models.CharField(max_length=100, blank=True, null=True)
     description = models.TextField(blank=True, null=True)
-    card_last_four = models.CharField(max_length=4, blank=True, null=True)
-    place_found = models.CharField(max_length=200)
-    finder_phone = models.CharField(max_length=20)
-    finder_name = models.CharField(max_length=100)
+    card_last_four = models.CharField(max_length=5, blank=True, null=True)
+    place_found = models.CharField(max_length=200, blank=True, null=True)
+    finder_phone = models.CharField(max_length=20, blank=True, null=True)
+    finder_name = models.CharField(max_length=100, blank=True, null=True)
     reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='found_items')
     photo = models.ImageField(upload_to="found_items/photos/", blank=True, null=True) 
 
