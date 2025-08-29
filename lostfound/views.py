@@ -220,8 +220,9 @@ class FoundItemViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsStaffOrReadOnly]
 
     def perform_create(self, serializer):
-        found_item = serializer.save(reported_by=self.request.user)
-
+        found_item = serializer.save(reported_by=self.request.user,
+        status="found" # Ensure status is set to 'found' on creation
+        )
         PackagePrinter().print_found_receipt(found_item)
 
         similarity_threshold = 0.5
