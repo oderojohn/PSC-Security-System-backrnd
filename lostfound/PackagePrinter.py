@@ -4,7 +4,7 @@ from datetime import datetime
 class PackagePrinter:
     """Handles printing of package receipts using ESC/POS commands"""
 
-    def __init__(self, ip="192.168.", port=9100):
+    def __init__(self, ip="192.168.10.172", port=9100):
         self.PRINTER_IP = ip
         self.PRINTER_PORT = port
 

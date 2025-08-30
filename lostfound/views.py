@@ -210,7 +210,14 @@ class LostItemViewSet(viewsets.ModelViewSet):
         response = super().create(request, *args, **kwargs)
         if hasattr(self, 'matches') and self.matches:
             response.data['matches'] = self.matches
-            response.data['acknowledgment'] = f"{len(self.matches)} matches found and emails sent to: {', '.join(set(self.recipients))}"
+
+            # Clean recipients: remove None/empty and force str
+            valid_recipients = [str(r) for r in getattr(self, 'recipients', []) if r]
+
+            if valid_recipients:
+                response.data['acknowledgment'] = f"{len(self.matches)} matches found and emails sent to: {', '.join(set(valid_recipients))}"
+            else:
+                response.data['acknowledgment'] = f"{len(self.matches)} matches found, but no valid email recipients."
         else:
             response.data['acknowledgment'] = "Acknowledgment email sent to reporter."
         return response
@@ -352,6 +359,33 @@ class LostItemViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @action(detail=True, methods=['post'], url_path='mark_found')
+    def mark_found(self, request, pk=None):
+        """Mark a lost item as found"""
+        lost_item = self.get_object()
+
+        if lost_item.status == 'found':
+            return Response({"message": "Item is already marked as found"}, status=status.HTTP_400_BAD_REQUEST)
+
+        lost_item.status = 'found'
+        lost_item.save()
+
+        # Send notification email if reporter has email
+        if lost_item.reporter_email:
+            from django.core.mail import send_mail
+            try:
+                send_mail(
+                    'Your Lost Item Has Been Found',
+                    f'Good news! Your lost item ({lost_item.item_name or lost_item.card_last_four}) has been found and is available for pickup.',
+                    settings.DEFAULT_FROM_EMAIL,
+                    [lost_item.reporter_email],
+                    fail_silently=True,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send found notification: {e}")
+
+        return Response({"message": "Item marked as found successfully"})
+
     @action(detail=False, methods=['get'], url_path='export_csv')
     def export_csv(self, request):
         """Export lost items to CSV"""
@@ -483,7 +517,7 @@ class FoundItemViewSet(viewsets.ModelViewSet):
         tracking_id = request.query_params.get('tracking_id')
 
         lost_items = LostItem.objects.all()
-        found_items = FoundItem.objects.all()
+        found_items = FoundItem.objects.filter(status='found')  # Only match against available items
 
         if tracking_id:
             lost_items = lost_items.filter(tracking_id=tracking_id) | lost_items.none()
@@ -530,13 +564,18 @@ class FoundItemViewSet(viewsets.ModelViewSet):
                     {"error": f"No LostItem found for tracking_id={tracking_id}"},
                     status=status.HTTP_404_NOT_FOUND
                 )
-            found_items = FoundItem.objects.all()
+            found_items = FoundItem.objects.filter(status='found')  # Only match against available items
 
         else:
             # Case 2: Must be a FoundItem.id (integer)
             try:
                 found_item_id = int(tracking_id)
                 found_item = FoundItem.objects.get(id=found_item_id)
+                if found_item.status != 'found':
+                    return Response(
+                        {"error": f"Item {tracking_id} is not available for matching (status: {found_item.status})"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
                 found_items = [found_item]
                 lost_items = LostItem.objects.all()
             except (ValueError, FoundItem.DoesNotExist):
@@ -577,6 +616,9 @@ class FoundItemViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
         item_type = self.request.query_params.get('type')  # ?type=card or ?type=item
+
+        # Only show items that are still available (not claimed)
+        qs = qs.filter(status='found')
 
         if item_type == 'card':
             qs = qs.filter(type='card')
@@ -657,6 +699,15 @@ class PickupLogViewSet(ReportMixin, viewsets.ModelViewSet):
     queryset = PickupLog.objects.all().order_by('-pickup_date')
     serializer_class = PickupLogSerializer
     permission_classes = [IsAuthenticated, IsStaffOrReadOnly]
+
+    def perform_create(self, serializer):
+        item = serializer.validated_data['item']
+        if item.status == 'claimed':
+            raise serializers.ValidationError("This item has already been claimed and cannot be picked up again.")
+        pickup_log = serializer.save(verified_by=self.request.user)
+        item.status = 'claimed'
+        item.save()
+        logger.info(f"Item {item.id} marked as claimed by {self.request.user}")
 
     def get_queryset(self):
         queryset = super().get_queryset()
