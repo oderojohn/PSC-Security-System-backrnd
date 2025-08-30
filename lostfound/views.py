@@ -6,13 +6,18 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q, Count
 from django.contrib.auth import get_user_model
-from .models import LostItem, FoundItem, PickupLog
+from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
+from .models import LostItem, FoundItem, PickupLog, SystemSettings
 from .serializers import (
-    LostItemSerializer, 
-    FoundItemSerializer, 
+    LostItemSerializer,
+    FoundItemSerializer,
     PickupLogSerializer,
     ItemStatsSerializer,
-    WeeklyReportSerializer
+    WeeklyReportSerializer,
+    SystemSettingsSerializer
 )
 from .permissions import IsStaffOrReadOnly
 from difflib import SequenceMatcher
@@ -148,7 +153,7 @@ def get_match_reasons(lost_item, found_item):
 
 # --- Lost Item ViewSet ---
 class LostItemViewSet(viewsets.ModelViewSet):
-    queryset = LostItem.objects.all().order_by('-date_reported')
+    queryset = LostItem.objects.select_related('reported_by').order_by('-date_reported')
     serializer_class = LostItemSerializer
     permission_classes = [IsAuthenticated, IsStaffOrReadOnly]
 
@@ -157,9 +162,17 @@ class LostItemViewSet(viewsets.ModelViewSet):
             reported_by=self.request.user,
             tracking_id=f"LI-{uuid.uuid4().hex[:8].upper()}"
         )
+        logger.info(f"Lost item reported: {lost_item.tracking_id} by user {self.request.user}")
 
-        days_back = 7
-        similarity_threshold = 0.6
+        # Auto-print receipt for lost item
+        if SystemSettings.get_setting('auto_print_lost_receipt', 'true').lower() == 'true':
+            from .PackagePrinter import PackagePrinter
+            printer = PackagePrinter()
+            # We need to create a print method for lost items
+            printer.print_lost_receipt(lost_item)
+
+        days_back = int(SystemSettings.get_setting('match_days_back', 7))
+        similarity_threshold = float(SystemSettings.get_setting('lost_match_threshold', 0.6))
         recent_found_items = FoundItem.objects.filter(status='found')
 
         matches = []
@@ -176,6 +189,7 @@ class LostItemViewSet(viewsets.ModelViewSet):
                 matches.append(match_data)
                 recipients.append(lost_item.reporter_email)
 
+                logger.info(f"Sending match notification for lost item {lost_item.tracking_id} to {lost_item.reporter_email}")
                 threading.Thread(
                     target=send_match_notification,
                     args=(lost_item, [match_data]),
@@ -212,10 +226,205 @@ class LostItemViewSet(viewsets.ModelViewSet):
 
         return qs
 
+    @action(detail=False, methods=['get'], url_path='export_csv')
+    def export_csv(self, request):
+        """Export found items to CSV"""
+        import csv
+        from django.http import HttpResponse
+
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="found_items.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(['ID', 'Type', 'Item Name', 'Owner Name', 'Place Found', 'Status', 'Date Reported'])
+
+        for item in self.get_queryset():
+            writer.writerow([
+                item.id,
+                item.type,
+                item.item_name or '',
+                item.owner_name or '',
+                item.place_found or '',
+                item.status,
+                item.date_reported.strftime('%Y-%m-%d %H:%M:%S')
+            ])
+
+        return response
+
+    @action(detail=False, methods=['get'], url_path='export_pdf')
+    def export_pdf(self, request):
+        """Export found items to PDF"""
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+        from io import BytesIO
+
+        buffer = BytesIO()
+        p = canvas.Canvas(buffer, pagesizes=letter)
+        width, height = letter
+
+        # Title
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(100, height - 50, "Found Items Report - Parklands Sports Club")
+
+        # Table headers
+        p.setFont("Helvetica-Bold", 12)
+        p.drawString(50, height - 100, "ID")
+        p.drawString(100, height - 100, "Type")
+        p.drawString(150, height - 100, "Item Name")
+        p.drawString(250, height - 100, "Owner")
+        p.drawString(350, height - 100, "Status")
+
+        # Data
+        p.setFont("Helvetica", 10)
+        y = height - 120
+        for item in self.get_queryset()[:50]:  # Limit to 50 items for PDF
+            p.drawString(50, y, str(item.id))
+            p.drawString(100, y, item.type)
+            p.drawString(150, y, (item.item_name or '')[:20])
+            p.drawString(250, y, (item.owner_name or '')[:20])
+            p.drawString(350, y, item.status)
+            y -= 20
+            if y < 50:
+                p.showPage()
+                y = height - 50
+
+        p.save()
+        buffer.seek(0)
+
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="found_items.pdf"'
+        return response
+
+    @action(detail=True, methods=['post'], url_path='print_receipt')
+    def print_receipt(self, request, pk=None):
+        found_item = self.get_object()
+        from .PackagePrinter import PackagePrinter
+        printer = PackagePrinter()
+        success = printer.print_found_receipt(found_item)
+        if success:
+            return Response({"message": "Receipt printed successfully"})
+        else:
+            return Response({"error": "Failed to print receipt"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='send_bulk_email')
+    def send_bulk_email(self, request):
+        """Send email to multiple recipients"""
+        recipients = request.data.get('recipients', [])
+        subject = request.data.get('subject', '')
+        message = request.data.get('message', '')
+
+        if not recipients or not subject or not message:
+            return Response({"error": "recipients, subject, and message are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.core.mail import send_mail
+        try:
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                recipients,
+                fail_silently=False,
+            )
+            return Response({"message": f"Email sent to {len(recipients)} recipients"})
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='send_email')
+    def send_email(self, request, pk=None):
+        """Send email to a specific lost item reporter"""
+        lost_item = self.get_object()
+        subject = request.data.get('subject', 'Lost Item Update')
+        message = request.data.get('message', '')
+
+        if not lost_item.reporter_email:
+            return Response({"error": "No email address for this reporter"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.core.mail import send_mail
+        try:
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [lost_item.reporter_email],
+                fail_silently=False,
+            )
+            return Response({"message": "Email sent successfully"})
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'], url_path='export_csv')
+    def export_csv(self, request):
+        """Export lost items to CSV"""
+        import csv
+        from django.http import HttpResponse
+
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="lost_items.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(['Tracking ID', 'Type', 'Item Name', 'Owner Name', 'Place Lost', 'Status', 'Date Reported'])
+
+        for item in self.get_queryset():
+            writer.writerow([
+                item.tracking_id,
+                item.type,
+                item.item_name or '',
+                item.owner_name or '',
+                item.place_lost or '',
+                item.status,
+                item.date_reported.strftime('%Y-%m-%d %H:%M:%S')
+            ])
+
+        return response
+
+    @action(detail=False, methods=['get'], url_path='export_pdf')
+    def export_pdf(self, request):
+        """Export lost items to PDF"""
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import letter
+        from io import BytesIO
+
+        buffer = BytesIO()
+        p = canvas.Canvas(buffer, pagesizes=letter)
+        width, height = letter
+
+        # Title
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(100, height - 50, "Lost Items Report - Parklands Sports Club")
+
+        # Table headers
+        p.setFont("Helvetica-Bold", 12)
+        p.drawString(50, height - 100, "Tracking ID")
+        p.drawString(150, height - 100, "Type")
+        p.drawString(200, height - 100, "Item Name")
+        p.drawString(300, height - 100, "Owner")
+        p.drawString(400, height - 100, "Status")
+
+        # Data
+        p.setFont("Helvetica", 10)
+        y = height - 120
+        for item in self.get_queryset()[:50]:  # Limit to 50 items for PDF
+            p.drawString(50, y, item.tracking_id or '')
+            p.drawString(150, y, item.type)
+            p.drawString(200, y, (item.item_name or '')[:20])
+            p.drawString(300, y, (item.owner_name or '')[:20])
+            p.drawString(400, y, item.status)
+            y -= 20
+            if y < 50:
+                p.showPage()
+                y = height - 50
+
+        p.save()
+        buffer.seek(0)
+
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="lost_items.pdf"'
+        return response
+
 
 # --- Found Item ViewSet ---
 class FoundItemViewSet(viewsets.ModelViewSet):
-    queryset = FoundItem.objects.all().order_by('-date_reported')
+    queryset = FoundItem.objects.select_related('reported_by').order_by('-date_reported')
     serializer_class = FoundItemSerializer
     permission_classes = [IsAuthenticated, IsStaffOrReadOnly]
 
@@ -225,7 +434,7 @@ class FoundItemViewSet(viewsets.ModelViewSet):
         )
         PackagePrinter().print_found_receipt(found_item)
 
-        similarity_threshold = 0.5
+        similarity_threshold = float(SystemSettings.get_setting('found_match_threshold', 0.5))
         recent_lost_items = LostItem.objects.all()
 
         matches_sent = []
@@ -270,7 +479,7 @@ class FoundItemViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'], url_path='generate_matches')
     def generate_matches(self, request):
-        similarity_threshold = 0.5
+        similarity_threshold = float(SystemSettings.get_setting('generate_match_threshold', 0.5))
         tracking_id = request.query_params.get('tracking_id')
 
         lost_items = LostItem.objects.all()
@@ -336,7 +545,7 @@ class FoundItemViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-        similarity_threshold = 0.5
+        similarity_threshold = float(SystemSettings.get_setting('print_match_threshold', 0.5))
         matches = []
 
         for lost in lost_items:
@@ -430,6 +639,17 @@ class ItemStatsViewSet(viewsets.ViewSet):
         serializer = ItemStatsSerializer(data=stats)
         if serializer.is_valid():
             return Response(serializer.data)
+    
+        @action(detail=True, methods=['post'], url_path='print_receipt')
+        def print_receipt(self, request, pk=None):
+            lost_item = self.get_object()
+            from .PackagePrinter import PackagePrinter
+            printer = PackagePrinter()
+            success = printer.print_lost_receipt(lost_item)
+            if success:
+                return Response({"message": "Receipt printed successfully"})
+            else:
+                return Response({"error": "Failed to print receipt"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -488,3 +708,34 @@ class PickupLogViewSet(ReportMixin, viewsets.ModelViewSet):
             })
 
         return Response(data, status=status.HTTP_200_OK)
+
+
+class SystemSettingsViewSet(viewsets.ModelViewSet):
+    queryset = SystemSettings.objects.all()
+    serializer_class = SystemSettingsSerializer
+    permission_classes = [IsAuthenticated, IsStaffOrReadOnly]
+
+    @action(detail=False, methods=['get'], url_path='get_setting')
+    def get_setting(self, request):
+        key = request.query_params.get('key')
+        if not key:
+            return Response({"error": "key parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        value = SystemSettings.get_setting(key)
+        if value is None:
+            return Response({"error": f"Setting '{key}' not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({"key": key, "value": value})
+
+    @action(detail=False, methods=['post'], url_path='set_setting')
+    def set_setting(self, request):
+        key = request.data.get('key')
+        value = request.data.get('value')
+        description = request.data.get('description', '')
+
+        if not key or value is None:
+            return Response({"error": "key and value are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        setting = SystemSettings.set_setting(key, str(value), description)
+        serializer = self.get_serializer(setting)
+        return Response(serializer.data)

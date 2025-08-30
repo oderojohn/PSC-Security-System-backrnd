@@ -40,6 +40,7 @@ class LostItem(BaseItem):
     reporter_member_id = models.CharField(max_length=20, blank=True, null=True)
     reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='lost_items')
     tracking_id = models.CharField(max_length=50, unique=True, blank=True, null=True)
+    photo = models.ImageField(upload_to="lost_items/photos/", blank=True, null=True)
 
     def save(self, *args, **kwargs):
         if not self.tracking_id:
@@ -79,3 +80,35 @@ class PickupLog(models.Model):
 
     def __str__(self):
         return f"Pickup by {self.picked_by_name} on {self.pickup_date}"
+
+
+class SystemSettings(models.Model):
+    """Model for configurable system settings"""
+    key = models.CharField(max_length=100, unique=True)
+    value = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.key}: {self.value}"
+
+    @classmethod
+    def get_setting(cls, key, default=None):
+        """Get a setting value by key"""
+        try:
+            return cls.objects.get(key=key).value
+        except cls.DoesNotExist:
+            return default
+
+    @classmethod
+    def set_setting(cls, key, value, description=""):
+        """Set or update a setting"""
+        setting, created = cls.objects.get_or_create(
+            key=key,
+            defaults={'value': value, 'description': description}
+        )
+        if not created:
+            setting.value = value
+            setting.description = description
+            setting.save()
+        return setting

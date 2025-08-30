@@ -1,26 +1,29 @@
 from celery import shared_task
 from django.utils import timezone
-from .models import LostItem, FoundItem
+from .models import LostItem, FoundItem, SystemSettings
 from difflib import SequenceMatcher
 
 @shared_task
 def check_for_potential_matches():
+    days_back = int(SystemSettings.get_setting('task_match_days_back', 7))
+    threshold = float(SystemSettings.get_setting('task_match_threshold', 0.7))
+
     lost_items = LostItem.objects.filter(
         status='pending',
-        date_reported__gte=timezone.now() - timezone.timedelta(days=7))
-    
+        date_reported__gte=timezone.now() - timezone.timedelta(days=days_back))
+
     found_items = FoundItem.objects.filter(
         status='found',
-        date_reported__gte=timezone.now() - timezone.timedelta(days=7))
-    
+        date_reported__gte=timezone.now() - timezone.timedelta(days=days_back))
+
     matches_found = 0
-    
+
     for lost_item in lost_items:
         for found_item in found_items:
             score = calculate_match_score(lost_item, found_item)
-            if score >= 0.7:
+            if score >= threshold:
                 matches_found += 1
-    
+
     return f"Found {matches_found} potential matches (No emails sent)"
 
 def calculate_match_score(lost_item, found_item):
