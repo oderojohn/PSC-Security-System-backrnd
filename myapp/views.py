@@ -4,8 +4,9 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
-from .models import Package
-from .serializers import PackageSerializer, PickPackageSerializer
+from .models import Package, AppSettings, PackageHistory
+from .serializers import PackageSerializer, PickPackageSerializer, AppSettingsSerializer
+from .printer_service import PackagePrinter
 from .printer_service import PackagePrinter
 from threading import Thread
 import logging
@@ -61,12 +62,23 @@ class PackageViewSet(viewsets.ModelViewSet):
 
         serializer = PickPackageSerializer(package, data=request.data)
         if serializer.is_valid():
+            old_status = package.status
             package = serializer.save()
             package.status = Package.PICKED
             package.picked_at = timezone.now()
             package.shelf = None
             package.save()
-            
+
+            # Log history
+            PackageHistory.objects.create(
+                package=package,
+                action='picked',
+                old_status=old_status,
+                new_status=Package.PICKED,
+                performed_by=request.data.get('picked_by', ''),
+                notes=f"Picked by {request.data.get('picked_by', '')} with ID {request.data.get('picker_id', '')}"
+            )
+
             response_data = serializer.data
             response_data['shelf'] = None
             return Response(
@@ -148,6 +160,10 @@ class PackageViewSet(viewsets.ModelViewSet):
             permission_classes = [IsStaff | IsReception]
         elif self.action in ['export']:
             permission_classes = [IsAdmin | IsStaff]
+        elif self.action in ['reprint']:
+            permission_classes = [IsAdmin | IsReception | IsStaff]
+        elif self.action in ['history']:
+            permission_classes = [IsStaff]
         else:
             permission_classes = [IsStaff]
         return [permission() for permission in permission_classes]
@@ -158,23 +174,34 @@ class PackageViewSet(viewsets.ModelViewSet):
             if serializer.is_valid():
                 package = serializer.save()
 
-                print_data = {
-                    'code': package.code,
-                    'type': package.get_type_display(),
-                    'description': package.description,
-                    'recipient_name': package.recipient_name,
-                    'recipient_phone': package.recipient_phone,
-                    'dropped_by': package.dropped_by,
-                    'dropper_phone': package.dropper_phone,
-                    'shelf': package.shelf
-                }
-
-                print_thread = Thread(
-                    target=self._print_receipt,
-                    args=(print_data,),
-                    daemon=True
+                # Log history
+                PackageHistory.objects.create(
+                    package=package,
+                    action='created',
+                    new_status=Package.PENDING,
+                    performed_by=getattr(request.user, 'username', 'System'),
+                    notes=f"Package created by {request.data.get('dropped_by', 'Unknown')}"
                 )
-                print_thread.start()
+
+                settings = AppSettings.get_settings()
+                if settings.auto_print_on_create:
+                    print_data = {
+                        'code': package.code,
+                        'type': package.get_type_display(),
+                        'description': package.description,
+                        'recipient_name': package.recipient_name,
+                        'recipient_phone': package.recipient_phone,
+                        'dropped_by': package.dropped_by,
+                        'dropper_phone': package.dropper_phone,
+                        'shelf': package.shelf
+                    }
+
+                    print_thread = Thread(
+                        target=self._print_receipt,
+                        args=(print_data,),
+                        daemon=True
+                    )
+                    print_thread.start()
 
                 return Response(PackageSerializer(package).data, status=status.HTTP_201_CREATED)
 
@@ -187,8 +214,207 @@ class PackageViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    def update(self, request, *args, **kwargs):
+        """Override update to log package edits"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+
+        # Store original values for comparison
+        original_data = {
+            'type': instance.type,
+            'description': instance.description,
+            'recipient_name': instance.recipient_name,
+            'recipient_phone': instance.recipient_phone,
+            'dropped_by': instance.dropped_by,
+            'dropper_phone': instance.dropper_phone,
+        }
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        # Get updated data
+        updated_data = serializer.validated_data
+        changes = []
+
+        # Compare fields and track changes
+        for field in ['type', 'description', 'recipient_name', 'recipient_phone', 'dropped_by', 'dropper_phone']:
+            if field in updated_data and updated_data[field] != original_data[field]:
+                changes.append(f"{field}: '{original_data[field]}' → '{updated_data[field]}'")
+
+        # Perform the update
+        self.perform_update(serializer)
+
+        if getattr(instance, '_prefetched_objects_cache', None):
+            # If 'prefetch_related' has been applied to a queryset, we need to
+            # forcibly invalidate the prefetch cache on the instance.
+            instance._prefetched_objects_cache = {}
+
+        # Log the edit if there were changes
+        if changes:
+            PackageHistory.objects.create(
+                package=instance,
+                action='edited',
+                performed_by=getattr(request.user, 'username', 'System'),
+                notes=f"Package details updated: {', '.join(changes)}"
+            )
+
+        return Response(serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        """Override partial_update to log package edits"""
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def reprint(self, request, pk=None):
+        package = self.get_object()
+        settings = AppSettings.get_settings()
+
+        if not settings.enable_reprint:
+            return Response(
+                {'error': 'Reprint functionality is disabled'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Check max reprint attempts
+        reprint_count = PackageHistory.objects.filter(
+            package=package,
+            action='reprinted'
+        ).count()
+
+        if reprint_count >= settings.max_reprint_attempts:
+            return Response(
+                {
+                    'error': f'Maximum reprint attempts ({settings.max_reprint_attempts}) exceeded',
+                    'current_attempts': reprint_count
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        print_data = {
+            'code': package.code,
+            'type': package.get_type_display(),
+            'description': package.description,
+            'recipient_name': package.recipient_name,
+            'recipient_phone': package.recipient_phone,
+            'dropped_by': package.dropped_by,
+            'dropper_phone': package.dropper_phone,
+            'shelf': package.shelf
+        }
+
+        # Check for recent edits
+        recent_edit = PackageHistory.objects.filter(
+            package=package,
+            action='edited'
+        ).order_by('-timestamp').first()
+
+        edit_note = ""
+        if recent_edit:
+            edit_note = f" (after edit: {recent_edit.notes})"
+
+        printer = PackagePrinter(ip=settings.printer_ip, port=settings.printer_port, enable_qr=settings.enable_qr_codes)
+        if printer.print_label_receipt(print_data):
+            # Log history
+            PackageHistory.objects.create(
+                package=package,
+                action='reprinted',
+                performed_by=getattr(request.user, 'username', 'System'),
+                notes=f'Package receipt reprinted successfully (attempt {reprint_count + 1}/{settings.max_reprint_attempts}){edit_note}'
+            )
+            return Response({
+                'message': 'Package receipt reprinted successfully',
+                'attempts_used': reprint_count + 1,
+                'max_attempts': settings.max_reprint_attempts,
+                'recent_edit': recent_edit.notes if recent_edit else None
+            })
+        else:
+            # Log history even if print failed
+            PackageHistory.objects.create(
+                package=package,
+                action='reprint_failed',
+                performed_by=getattr(request.user, 'username', 'System'),
+                notes=f'Package receipt reprint failed - printer connection issue{edit_note}'
+            )
+            return Response(
+                {'error': 'Failed to reprint package receipt - check printer connection'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['get'])
+    def history(self, request, pk=None):
+        package = self.get_object()
+        history = package.history.all()
+        settings = AppSettings.get_settings()
+
+        # Count reprint attempts
+        reprint_count = PackageHistory.objects.filter(
+            package=package,
+            action='reprinted'
+        ).count()
+
+        data = [
+            {
+                'action': h.action,
+                'old_status': h.old_status,
+                'new_status': h.new_status,
+                'performed_by': h.performed_by,
+                'notes': h.notes,
+                'timestamp': h.timestamp
+            }
+            for h in history
+        ]
+
+        return Response({
+            'history': data,
+            'reprint_info': {
+                'attempts_used': reprint_count,
+                'max_attempts': settings.max_reprint_attempts,
+                'remaining_attempts': max(0, settings.max_reprint_attempts - reprint_count)
+            }
+        })
+
     def _print_receipt(self, package_data):
-        printer = PackagePrinter()
-        if not printer.print_label_receipt(package_data):
-            logger.error(f"Failed to print label receipt for package {package_data['code']}")
+        try:
+            settings = AppSettings.get_settings()
+            printer = PackagePrinter(ip=settings.printer_ip, port=settings.printer_port, enable_qr=settings.enable_qr_codes)
+            if not printer.print_label_receipt(package_data):
+                logger.error(f"Failed to print label receipt for package {package_data['code']} - printer connection or configuration issue")
+            else:
+                logger.info(f"Successfully printed receipt for package {package_data['code']}")
+        except Exception as e:
+            logger.error(f"Exception during printing for package {package_data['code']}: {e}")
+
+
+class AppSettingsViewSet(viewsets.ModelViewSet):
+    queryset = AppSettings.objects.all()
+    serializer_class = AppSettingsSerializer
+
+    def get_queryset(self):
+        # Ensure only one settings instance
+        return AppSettings.objects.filter(pk=1)
+
+    def get_object(self):
+        # Always return the singleton settings
+        return AppSettings.get_settings()
+
+    def list(self, request):
+        settings = AppSettings.get_settings()
+        serializer = self.get_serializer(settings)
+        return Response(serializer.data)
+
+    def create(self, request):
+        if AppSettings.objects.exists():
+            return Response(
+                {'error': 'Settings already exist'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().create(request)
+
+    def get_permissions(self):
+        # Only admins can modify settings
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            permission_classes = [IsAdmin]
+        else:
+            permission_classes = [IsAdmin | IsStaff]
+        return [permission() for permission in permission_classes]
         

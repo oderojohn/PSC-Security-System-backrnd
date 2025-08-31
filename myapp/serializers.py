@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Package
+from .models import Package, AppSettings
 from django.utils import timezone
 
 
@@ -57,3 +57,16 @@ class PickPackageSerializer(serializers.ModelSerializer):
 
         instance.save()
         return instance
+
+
+class AppSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AppSettings
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def create(self, validated_data):
+        # Ensure only one instance
+        if AppSettings.objects.exists():
+            raise serializers.ValidationError("Settings already exist. Use update instead.")
+        return super().create(validated_data)

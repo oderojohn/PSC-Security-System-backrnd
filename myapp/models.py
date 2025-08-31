@@ -86,3 +86,70 @@ class Package(models.Model):
 
     def __str__(self):
         return f"{self.code} - {self.recipient_name} ({self.status})"
+
+
+class AppSettings(models.Model):
+    """
+    Singleton model for application settings
+    """
+    printer_ip = models.CharField(max_length=15, default='192.168.10.172', help_text='Printer IP address')
+    printer_port = models.IntegerField(default=9100, help_text='Printer port')
+    enable_qr_codes = models.BooleanField(default=True, help_text='Enable QR code generation on receipts')
+    default_package_type = models.CharField(max_length=10, choices=Package.TYPE_CHOICES, default=Package.PACKAGE)
+    auto_print_on_create = models.BooleanField(default=True, help_text='Automatically print receipt when package is created')
+    enable_reprint = models.BooleanField(default=True, help_text='Allow reprinting of package receipts')
+    max_reprint_attempts = models.IntegerField(default=3, help_text='Maximum number of reprint attempts')
+    notification_email = models.EmailField(blank=True, null=True, help_text='Email for notifications')
+    enable_sms_notifications = models.BooleanField(default=False, help_text='Enable SMS notifications for package updates')
+    sms_api_key = models.CharField(max_length=255, blank=True, null=True, help_text='SMS API key')
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'App Settings'
+        verbose_name_plural = 'App Settings'
+
+    def save(self, *args, **kwargs):
+        # Ensure only one instance exists
+        if not self.pk and AppSettings.objects.exists():
+            raise ValueError("Only one AppSettings instance is allowed.")
+        return super().save(*args, **kwargs)
+
+    @classmethod
+    def get_settings(cls):
+        """Get the singleton settings instance, creating if doesn't exist"""
+        settings, created = cls.objects.get_or_create(pk=1, defaults={
+            'printer_ip': '192.168.10.172',
+            'printer_port': 9100,
+            'enable_qr_codes': True,
+            'default_package_type': Package.PACKAGE,
+            'auto_print_on_create': True,
+            'enable_reprint': True,
+            'max_reprint_attempts': 3,
+        })
+        return settings
+
+    def __str__(self):
+        return "Application Settings"
+
+
+class PackageHistory(models.Model):
+    """
+    Track package status changes and actions
+    """
+    package = models.ForeignKey(Package, on_delete=models.CASCADE, related_name='history')
+    action = models.CharField(max_length=50, help_text='Action performed (created, picked, reprinted, etc.)')
+    old_status = models.CharField(max_length=10, choices=Package.STATUS_CHOICES, blank=True, null=True)
+    new_status = models.CharField(max_length=10, choices=Package.STATUS_CHOICES, blank=True, null=True)
+    performed_by = models.CharField(max_length=100, blank=True, null=True, help_text='User who performed the action')
+    notes = models.TextField(blank=True, null=True, help_text='Additional notes')
+    timestamp = models.DateTimeField(default=timezone.now)
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+        verbose_name = 'Package History'
+        verbose_name_plural = 'Package History'
+
+    def __str__(self):
+        return f"{self.package.code} - {self.action} at {self.timestamp}"
