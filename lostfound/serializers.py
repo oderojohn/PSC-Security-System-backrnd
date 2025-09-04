@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import LostItem, FoundItem, PickupLog, SystemSettings
+import re
 
 class DailyCountSerializer(serializers.Serializer):
     day = serializers.DateTimeField()
@@ -16,6 +17,17 @@ class LostItemSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Invalid email format")
         return value
 
+    def validate_card_last_four(self, value):
+        if value:
+            # Pattern: Letter + exactly 4 digits, or Letter + exactly 4 digits + letter
+            pattern = r'^[A-Z][0-9]{4}[A-Z]?$'
+            if not re.match(pattern, value.upper()):
+                raise serializers.ValidationError(
+                    "Card last four must start with a letter (A-Z), followed by exactly 4 digits, "
+                    "and optionally end with a letter. Examples: A1234, A1234B"
+                )
+        return value
+
     def validate(self, data):
         if data.get('type') == 'card' and not data.get('card_last_four'):
             raise serializers.ValidationError("Card last four digits are required for card type")
@@ -28,6 +40,17 @@ class FoundItemSerializer(serializers.ModelSerializer):
         model = FoundItem
         fields = '__all__'
         read_only_fields = ('date_reported', 'last_updated', 'reported_by')
+
+    def validate_card_last_four(self, value):
+        if value:
+            # Pattern: Letter + exactly 4 digits, or Letter + exactly 4 digits + letter
+            pattern = r'^[A-Z][0-9]{4}[A-Z]?$'
+            if not re.match(pattern, value.upper()):
+                raise serializers.ValidationError(
+                    "Card last four must start with a letter (A-Z), followed by exactly 4 digits, "
+                    "and optionally end with a letter. Examples: A1234, A1234B"
+                )
+        return value
 
     def validate(self, data):
         if data.get('type') == 'card' and not data.get('card_last_four'):

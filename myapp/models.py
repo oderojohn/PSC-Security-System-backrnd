@@ -52,17 +52,19 @@ class Package(models.Model):
     type = models.CharField(max_length=10, choices=TYPE_CHOICES, default=PACKAGE)
     description = models.TextField()
     recipient_name = models.CharField(max_length=100)
-    recipient_phone = models.CharField(max_length=20)
+    recipient_phone = models.CharField(max_length=20, blank=True, null=True)
+    recipient_id = models.CharField(max_length=6, blank=True, null=True, help_text='Recipient ID (max 6 characters, e.g., kwe45, k1234s)')
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PENDING)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
     dropped_by = models.CharField(max_length=100)
-    dropper_phone = models.CharField(max_length=20)
+    dropper_phone = models.CharField(max_length=20, blank=True, null=True)
+    dropper_id = models.CharField(max_length=6, blank=True, null=True, help_text='Member number (max 6 characters)')
 
     picked_by = models.CharField(max_length=100, blank=True, null=True)
     picker_phone = models.CharField(max_length=20, blank=True, null=True)
-    picker_id = models.CharField(max_length=20, blank=True, null=True)
+    picker_id = models.CharField(max_length=6, blank=True, null=True, help_text='Picker member number (max 6 characters)')
     picked_at = models.DateTimeField(blank=True, null=True)
 
     shelf = models.CharField(max_length=10, blank=True, null=True, editable=False)

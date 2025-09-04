@@ -143,13 +143,18 @@ class PackagePrinter:
             printer.text(f"Name: {recipient_name}\n")
             printer.set(bold=False)
             printer.text(f"Phone: {package_data['recipient_phone']}\n")
+            if package_data.get('recipient_id'):
+                printer.text(f"ID: {package_data['recipient_id']}\n")
 
             printer.text("\n")
             printer.set(bold=True)
             printer.text("DELIVERY INFORMATION\n")
             printer.set(bold=False)
             printer.text(f"Dropped by: {package_data['dropped_by']}\n")
-            printer.text(f"Phone: {package_data['dropper_phone']}\n")
+            if package_data.get('dropper_phone'):
+                printer.text(f"Phone: {package_data['dropper_phone']}\n")
+            if package_data.get('dropper_id'):
+                printer.text(f"Member No: {package_data['dropper_id']}\n")
 
             printer.text("\n")
             printer.text(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")

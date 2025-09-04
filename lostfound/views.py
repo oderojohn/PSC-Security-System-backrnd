@@ -85,68 +85,224 @@ def safe_lower(value):
 
 
 def calculate_match_score(lost_item, found_item):
-    """Calculate similarity score between lost and found items."""
+    """Calculate similarity score between lost and found items with improved algorithm."""
 
     # If types do not match, stop immediately (no score)
     if lost_item.type != found_item.type:
-        return 0.0  
+        return 0.0
 
+    # Special handling for card type items
+    if lost_item.type == 'card':
+        return calculate_card_match_score(lost_item, found_item)
+
+    # Regular item matching logic
     scores = []
+    total_weight = 0
 
     # Type match bonus (only reached if same type)
     scores.append(0.3)
+    total_weight += 0.3
 
-    # Name similarity
-    name_similarity = SequenceMatcher(
-        None, safe_lower(lost_item.item_name), safe_lower(found_item.item_name)
-    ).ratio()
-    scores.append(name_similarity * 0.2)
+    # Enhanced name similarity with better handling
+    lost_name = safe_lower(lost_item.item_name)
+    found_name = safe_lower(found_item.item_name)
 
-    # Description similarity
-    desc_similarity = SequenceMatcher(
-        None, safe_lower(lost_item.description), safe_lower(found_item.description)
-    ).ratio()
-    scores.append(desc_similarity * 0.2)
+    if lost_name and found_name:
+        # Direct similarity
+        name_similarity = SequenceMatcher(None, lost_name, found_name).ratio()
 
-    # Location similarity
-    location_similarity = SequenceMatcher(
-        None, safe_lower(lost_item.place_lost), safe_lower(found_item.place_found)
-    ).ratio()
-    scores.append(location_similarity * 0.15)
+        # Keyword-based similarity for better matching
+        lost_keywords = set(lost_name.split())
+        found_keywords = set(found_name.split())
+        keyword_overlap = len(lost_keywords.intersection(found_keywords))
+        keyword_score = min(1.0, keyword_overlap / max(len(lost_keywords), len(found_keywords), 1))
 
-    # Time difference score
+        # Combine both scores
+        combined_name_score = max(name_similarity, keyword_score)
+        scores.append(combined_name_score * 0.25)
+        total_weight += 0.25
+    elif lost_name or found_name:
+        # Partial credit if only one has a name
+        scores.append(0.1)
+        total_weight += 0.1
+
+    # Enhanced description similarity
+    lost_desc = safe_lower(lost_item.description)
+    found_desc = safe_lower(found_item.description)
+
+    if lost_desc and found_desc:
+        desc_similarity = SequenceMatcher(None, lost_desc, found_desc).ratio()
+
+        # Extract color keywords for better matching
+        colors = ['black', 'white', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown', 'gray', 'grey']
+        lost_colors = [c for c in colors if c in lost_desc]
+        found_colors = [c for c in colors if c in found_desc]
+        color_match = 1.0 if lost_colors and found_colors and set(lost_colors).intersection(set(found_colors)) else 0.0
+
+        combined_desc_score = max(desc_similarity, color_match * 0.8)
+        scores.append(combined_desc_score * 0.2)
+        total_weight += 0.2
+    elif lost_desc or found_desc:
+        scores.append(0.05)
+        total_weight += 0.05
+
+    # Improved location similarity
+    lost_location = safe_lower(lost_item.place_lost)
+    found_location = safe_lower(found_item.place_found)
+
+    if lost_location and found_location:
+        location_similarity = SequenceMatcher(None, lost_location, found_location).ratio()
+
+        # Location keywords matching
+        location_keywords = ['tennis', 'court', 'gym', 'pool', 'restaurant', 'lobby', 'parking', 'clubhouse']
+        lost_loc_keywords = [k for k in location_keywords if k in lost_location]
+        found_loc_keywords = [k for k in location_keywords if k in found_location]
+        location_keyword_match = 1.0 if lost_loc_keywords and found_loc_keywords and set(lost_loc_keywords).intersection(set(found_loc_keywords)) else 0.0
+
+        combined_location_score = max(location_similarity, location_keyword_match)
+        scores.append(combined_location_score * 0.15)
+        total_weight += 0.15
+    elif lost_location or found_location:
+        scores.append(0.05)
+        total_weight += 0.05
+
+    # Improved time difference score with longer window
     time_diff = abs((lost_item.date_reported - found_item.date_reported).total_seconds())
-    time_score = max(0, 1 - (time_diff / (7 * 24 * 3600)))  # Decay after 7 days
-    scores.append(time_score * 0.15)
+    time_score = max(0, 1 - (time_diff / (14 * 24 * 3600)))  # Decay after 14 days
+    scores.append(time_score * 0.1)
+    total_weight += 0.1
 
-    return min(1.0, sum(scores))
+    # Normalize score based on available data
+    if total_weight > 0:
+        final_score = sum(scores) / total_weight
+        return min(1.0, final_score)
+    else:
+        return 0.0
+
+
+def calculate_card_match_score(lost_item, found_item):
+    """Simplified matching algorithm for card type items - only compares card numbers."""
+    # Card number matching - ONLY factor for cards
+    lost_card = safe_lower(lost_item.card_last_four or "")
+    found_card = safe_lower(found_item.card_last_four or "")
+
+    if lost_card and found_card:
+        # Exact match only
+        if lost_card == found_card:
+            return 1.0  # Perfect match
+        else:
+            return 0.0  # No match
+    else:
+        # If either card number is missing, no match
+        return 0.0
 
 def get_match_reasons(lost_item, found_item):
-    """Return human-readable reasons for a match."""
+    """Return human-readable reasons for a match with improved explanations."""
     reasons = []
 
     if lost_item.type != found_item.type:
         return ["Different item types (no valid match)"]
 
-    if lost_item.type == found_item.type:
-        reasons.append(f"Matching type: {lost_item.type}")
+    reasons.append(f"Matching type: {lost_item.type}")
 
-    name_ratio = SequenceMatcher(None, safe_lower(lost_item.item_name), safe_lower(found_item.item_name)).ratio()
-    if name_ratio > 0.7:
-        reasons.append(f"Similar item names ({name_ratio:.0%} match)")
+    # Special handling for card type items
+    if lost_item.type == 'card':
+        return get_card_match_reasons(lost_item, found_item)
 
-    desc_ratio = SequenceMatcher(None, safe_lower(lost_item.description), safe_lower(found_item.description)).ratio()
-    if desc_ratio > 0.6:
-        reasons.append(f"Similar descriptions ({desc_ratio:.0%} match)")
+    # Regular item matching reasons
+    # Enhanced name matching reasons
+    lost_name = safe_lower(lost_item.item_name)
+    found_name = safe_lower(found_item.item_name)
 
-    loc_ratio = SequenceMatcher(None, safe_lower(lost_item.place_lost), safe_lower(found_item.place_found)).ratio()
-    if loc_ratio > 0.7:
-        reasons.append(f"Similar locations ({loc_ratio:.0%} match)")
+    if lost_name and found_name:
+        name_ratio = SequenceMatcher(None, lost_name, found_name).ratio()
+        if name_ratio > 0.6:
+            reasons.append(f"Similar item names ({name_ratio:.0%} match)")
+        elif name_ratio > 0.3:
+            reasons.append(f"Some name similarity ({name_ratio:.0%} match)")
 
+        # Check for keyword matches
+        lost_keywords = set(lost_name.split())
+        found_keywords = set(found_name.split())
+        common_keywords = lost_keywords.intersection(found_keywords)
+        if common_keywords:
+            reasons.append(f"Common keywords: {', '.join(list(common_keywords)[:3])}")
+
+    # Enhanced description matching reasons
+    lost_desc = safe_lower(lost_item.description)
+    found_desc = safe_lower(found_item.description)
+
+    if lost_desc and found_desc:
+        desc_ratio = SequenceMatcher(None, lost_desc, found_desc).ratio()
+        if desc_ratio > 0.5:
+            reasons.append(f"Similar descriptions ({desc_ratio:.0%} match)")
+        elif desc_ratio > 0.2:
+            reasons.append(f"Some description similarity ({desc_ratio:.0%} match)")
+
+        # Color matching
+        colors = ['black', 'white', 'red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'brown', 'gray', 'grey']
+        lost_colors = [c for c in colors if c in lost_desc]
+        found_colors = [c for c in colors if c in found_desc]
+        common_colors = set(lost_colors).intersection(set(found_colors))
+        if common_colors:
+            reasons.append(f"Matching colors: {', '.join(common_colors)}")
+
+    # Enhanced location matching reasons
+    lost_location = safe_lower(lost_item.place_lost)
+    found_location = safe_lower(found_item.place_found)
+
+    if lost_location and found_location:
+        loc_ratio = SequenceMatcher(None, lost_location, found_location).ratio()
+        if loc_ratio > 0.6:
+            reasons.append(f"Similar locations ({loc_ratio:.0%} match)")
+        elif loc_ratio > 0.3:
+            reasons.append(f"Some location similarity ({loc_ratio:.0%} match)")
+
+        # Location keyword matching
+        location_keywords = ['tennis', 'court', 'gym', 'pool', 'restaurant', 'lobby', 'parking', 'clubhouse']
+        lost_loc_keywords = [k for k in location_keywords if k in lost_location]
+        found_loc_keywords = [k for k in location_keywords if k in found_location]
+        common_loc_keywords = set(lost_loc_keywords).intersection(set(found_loc_keywords))
+        if common_loc_keywords:
+            reasons.append(f"Location context: {', '.join(common_loc_keywords)}")
+
+    # Time-based reasons with better granularity
     time_diff = abs((lost_item.date_reported - found_item.date_reported).total_seconds())
-    if time_diff < 24 * 3600:
+    if time_diff < 2 * 3600:  # Within 2 hours
+        minutes = int(time_diff / 60)
+        reasons.append(f"Reported within {minutes} minute{'s' if minutes != 1 else ''} of each other")
+    elif time_diff < 24 * 3600:  # Within 24 hours
         hours = int(time_diff / 3600)
         reasons.append(f"Reported within {hours} hour{'s' if hours != 1 else ''} of each other")
+    elif time_diff < 7 * 24 * 3600:  # Within a week
+        days = int(time_diff / (24 * 3600))
+        reasons.append(f"Reported within {days} day{'s' if days != 1 else ''} of each other")
+    elif time_diff < 14 * 24 * 3600:  # Within two weeks
+        reasons.append("Reported within 2 weeks of each other")
+
+    # If no specific reasons found but items match, add a generic reason
+    if len(reasons) <= 1:  # Only the type matching reason
+        reasons.append("Potential match based on available information")
+
+    return reasons
+
+
+def get_card_match_reasons(lost_item, found_item):
+    """Simplified match reasons for card type items - only card number comparison."""
+    reasons = []
+    reasons.append("Matching type: card")
+
+    # Card number matching - only factor for cards
+    lost_card = safe_lower(lost_item.card_last_four or "")
+    found_card = safe_lower(found_item.card_last_four or "")
+
+    if lost_card and found_card:
+        if lost_card == found_card:
+            reasons.append(f"Exact card number match: {lost_card}")
+        else:
+            reasons.append("Different card numbers")
+    else:
+        reasons.append("Missing card number information")
 
     return reasons
 
@@ -173,7 +329,10 @@ class LostItemViewSet(viewsets.ModelViewSet):
 
         days_back = int(SystemSettings.get_setting('match_days_back', 7))
         similarity_threshold = float(SystemSettings.get_setting('lost_match_threshold', 0.6))
-        recent_found_items = FoundItem.objects.filter(status='found')
+        recent_found_items = FoundItem.objects.filter(
+            status='found',
+            date_reported__gte=timezone.now() - timezone.timedelta(days=days_back)
+        )
 
         matches = []
         recipients = []
@@ -189,35 +348,36 @@ class LostItemViewSet(viewsets.ModelViewSet):
                 matches.append(match_data)
                 recipients.append(lost_item.reporter_email)
 
-                logger.info(f"Sending match notification for lost item {lost_item.tracking_id} to {lost_item.reporter_email}")
-                threading.Thread(
-                    target=send_match_notification,
-                    args=(lost_item, [match_data]),
-                    daemon=True
-                ).start()
+                if lost_item.reporter_email:
+                    logger.info(f"Sending match notification for lost item {lost_item.tracking_id} to {lost_item.reporter_email}")
+                    threading.Thread(
+                        target=send_match_notification,
+                        args=(lost_item, [match_data]),
+                        daemon=True
+                    ).start()
 
         matches.sort(key=lambda x: x['match_score'], reverse=True)
         self.matches = matches
         self.recipients = recipients
 
-        threading.Thread(
-            target=send_report_acknowledgment,
-            args=(lost_item,),
-            daemon=True
-        ).start()
+        # Send acknowledgment email if email provided
+        if lost_item.reporter_email:
+            threading.Thread(
+                target=send_report_acknowledgment,
+                args=(lost_item,),
+                daemon=True
+            ).start()
 
     def create(self, request, *args, **kwargs):
         response = super().create(request, *args, **kwargs)
         if hasattr(self, 'matches') and self.matches:
-            response.data['matches'] = self.matches
-
             # Clean recipients: remove None/empty and force str
             valid_recipients = [str(r) for r in getattr(self, 'recipients', []) if r]
 
             if valid_recipients:
-                response.data['acknowledgment'] = f"{len(self.matches)} matches found and emails sent to: {', '.join(set(valid_recipients))}"
+                response.data['acknowledgment'] = f"Potential matches found and emails sent to: {', '.join(set(valid_recipients))}"
             else:
-                response.data['acknowledgment'] = f"{len(self.matches)} matches found, but no valid email recipients."
+                response.data['acknowledgment'] = "Potential matches found, but no valid email recipients."
         else:
             response.data['acknowledgment'] = "Acknowledgment email sent to reporter."
         return response
@@ -469,7 +629,7 @@ class FoundItemViewSet(viewsets.ModelViewSet):
         PackagePrinter().print_found_receipt(found_item)
 
         similarity_threshold = float(SystemSettings.get_setting('found_match_threshold', 0.5))
-        recent_lost_items = LostItem.objects.all()
+        recent_lost_items = LostItem.objects.filter(status='pending')
 
         matches_sent = []
         recipients = []
@@ -483,7 +643,8 @@ class FoundItemViewSet(viewsets.ModelViewSet):
                     'match_reasons': get_match_reasons(lost_item, found_item),
                     'sent_to': lost_item.reporter_email
                 }
-                send_match_notification(lost_item, [match_data])
+                if lost_item.reporter_email:
+                    send_match_notification(lost_item, [match_data])
                 matches_sent.append(match_data)
                 recipients.append(lost_item.reporter_email)
 
@@ -494,17 +655,15 @@ class FoundItemViewSet(viewsets.ModelViewSet):
         response = super().create(request, *args, **kwargs)
 
         if hasattr(self, 'matches_sent') and self.matches_sent:
-            response.data['matches'] = self.matches_sent
-
             # ✅ Clean recipients: remove None/empty and force str
             valid_recipients = [str(r) for r in getattr(self, 'recipients', []) if r]
 
             if valid_recipients:
                 response.data['acknowledgment'] = (
-                    f"{len(self.matches_sent)} matches found and emails sent to: {', '.join(set(valid_recipients))}"
+                    f"Potential matches found and emails sent to: {', '.join(set(valid_recipients))}"
                 )
             else:
-                response.data['acknowledgment'] = f"{len(self.matches_sent)} matches found, but no valid email recipients."
+                response.data['acknowledgment'] = "Potential matches found, but no valid email recipients."
         else:
             response.data['acknowledgment'] = "Acknowledgment email sent to reporter."
 
@@ -516,7 +675,7 @@ class FoundItemViewSet(viewsets.ModelViewSet):
         similarity_threshold = float(SystemSettings.get_setting('generate_match_threshold', 0.5))
         tracking_id = request.query_params.get('tracking_id')
 
-        lost_items = LostItem.objects.all()
+        lost_items = LostItem.objects.filter(status='pending')
         found_items = FoundItem.objects.filter(status='found')  # Only match against available items
 
         if tracking_id:
@@ -531,14 +690,41 @@ class FoundItemViewSet(viewsets.ModelViewSet):
                 score = calculate_match_score(lost, found)
                 if score >= similarity_threshold:
                     matches.append({
-                        'lost_item': LostItemSerializer(lost).data,
-                        'found_item': FoundItemSerializer(found).data,
+                        'lost_item_id': lost.id,
+                        'found_item_id': found.id,
                         'match_score': round(score * 100, 2),
                         'match_reasons': get_match_reasons(lost, found)
                     })
 
         matches.sort(key=lambda x: x['match_score'], reverse=True)
         return Response({'matches': matches})
+
+    @action(detail=False, methods=['get'], url_path='match_details')
+    def match_details(self, request):
+        lost_item_id = request.query_params.get('lost_item_id')
+        found_item_id = request.query_params.get('found_item_id')
+
+        if not lost_item_id or not found_item_id:
+            return Response({"error": "lost_item_id and found_item_id are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            lost_item = LostItem.objects.get(id=lost_item_id)
+            found_item = FoundItem.objects.get(id=found_item_id)
+        except (LostItem.DoesNotExist, FoundItem.DoesNotExist):
+            return Response({"error": "Invalid item IDs"}, status=status.HTTP_404_NOT_FOUND)
+
+        score = calculate_match_score(lost_item, found_item)
+        if score == 0:
+            return Response({"error": "No match between these items"}, status=status.HTTP_400_BAD_REQUEST)
+
+        match_data = {
+            'lost_item': LostItemSerializer(lost_item).data,
+            'found_item': FoundItemSerializer(found_item).data,
+            'match_score': round(score * 100, 2),
+            'match_reasons': get_match_reasons(lost_item, found_item)
+        }
+        return Response(match_data)
+
     @action(detail=False, methods=['post'], url_path='print_match')
     def print_match(self, request):
         """
@@ -577,7 +763,7 @@ class FoundItemViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
                 found_items = [found_item]
-                lost_items = LostItem.objects.all()
+                lost_items = LostItem.objects.filter(status='pending')
             except (ValueError, FoundItem.DoesNotExist):
                 return Response(
                     {"error": f"No LostItem or FoundItem found for tracking_id={tracking_id}"},

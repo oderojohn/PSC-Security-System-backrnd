@@ -7,7 +7,6 @@ from rest_framework.filters import SearchFilter
 from .models import Package, AppSettings, PackageHistory
 from .serializers import PackageSerializer, PickPackageSerializer, AppSettingsSerializer
 from .printer_service import PackagePrinter
-from .printer_service import PackagePrinter
 from threading import Thread
 import logging
 from users.permissions import IsAdmin, IsStaff, IsReception
@@ -64,10 +63,6 @@ class PackageViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             old_status = package.status
             package = serializer.save()
-            package.status = Package.PICKED
-            package.picked_at = timezone.now()
-            package.shelf = None
-            package.save()
 
             # Log history
             PackageHistory.objects.create(
@@ -81,11 +76,7 @@ class PackageViewSet(viewsets.ModelViewSet):
 
             response_data = serializer.data
             response_data['shelf'] = None
-            return Response(
-            response_data,
-            status=status.HTTP_200_OK
-        )
-            return Response(PackageSerializer(package).data, status=status.HTTP_200_OK)
+            return Response(response_data, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -175,12 +166,18 @@ class PackageViewSet(viewsets.ModelViewSet):
                 package = serializer.save()
 
                 # Log history
+                dropper_info = request.data.get('dropped_by', 'Unknown')
+                if request.data.get('dropper_id'):
+                    dropper_info += f" (Member: {request.data.get('dropper_id')})"
+                elif request.data.get('dropper_phone'):
+                    dropper_info += f" (Phone: {request.data.get('dropper_phone')})"
+
                 PackageHistory.objects.create(
                     package=package,
                     action='created',
                     new_status=Package.PENDING,
                     performed_by=getattr(request.user, 'username', 'System'),
-                    notes=f"Package created by {request.data.get('dropped_by', 'Unknown')}"
+                    notes=f"Package created by {dropper_info}"
                 )
 
                 settings = AppSettings.get_settings()
@@ -191,8 +188,10 @@ class PackageViewSet(viewsets.ModelViewSet):
                         'description': package.description,
                         'recipient_name': package.recipient_name,
                         'recipient_phone': package.recipient_phone,
+                        'recipient_id': package.recipient_id,
                         'dropped_by': package.dropped_by,
                         'dropper_phone': package.dropper_phone,
+                        'dropper_id': package.dropper_id,
                         'shelf': package.shelf
                     }
 
@@ -230,7 +229,10 @@ class PackageViewSet(viewsets.ModelViewSet):
         }
 
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            logger.error(f"Package update validation failed for package {instance.code}: {serializer.errors}")
+            logger.error(f"Request data: {request.data}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         # Get updated data
         updated_data = serializer.validated_data
@@ -297,8 +299,10 @@ class PackageViewSet(viewsets.ModelViewSet):
             'description': package.description,
             'recipient_name': package.recipient_name,
             'recipient_phone': package.recipient_phone,
+            'recipient_id': package.recipient_id,
             'dropped_by': package.dropped_by,
             'dropper_phone': package.dropper_phone,
+            'dropper_id': package.dropper_id,
             'shelf': package.shelf
         }
 

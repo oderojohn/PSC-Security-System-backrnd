@@ -140,7 +140,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://192.168.10.25:3000",
     "http://192.168.3.5:3000",
-    "https://ap-calculated-funeral-ic.trycloudflare.com"
+    "https://faqs-prospects-recorded-tokyo.trycloudflare.com"
 ]
 
 
@@ -198,3 +198,8 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = "odero4170@gmail.com"
 EMAIL_HOST_PASSWORD = "blty peex tdkn pvpi"
+# settings.py
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://cooling-contacts-increasing-sg.trycloudflare.com",
+]
